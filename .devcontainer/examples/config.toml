@@ -1,0 +1,8 @@
+# Copy the relevant values into ~/.codex/config.toml on the Linux/WSL host.
+# Keep any existing model, authentication, and MCP configuration you already use.
+
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[mcp_servers.jcodemunch]
+command = "/usr/local/bin/jcodemunch-mcp"

@@ -1,0 +1,4 @@
+# This file is illustrative. The bootstrap script creates ~/.npmrc inside the container.
+# Never replace ${NPM_TOKEN} with a literal token in a committed file.
+//registry.npmjs.org/:_authToken=${NPM_TOKEN}
+always-auth=true

@@ -1,0 +1,142 @@
+{
+  "name": "Autonomous Codex Development",
+
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "args": {
+      "FLUTTER_CHANNEL": "stable"
+    }
+  },
+
+  "features": {
+  "ghcr.io/devcontainers/features/docker-in-docker:3": {
+    "version": "latest",
+    "enableNonRootDocker": "true",
+    "moby": true,
+    "dockerDashComposeVersion": "v2"
+  },
+
+  "ghcr.io/devcontainers/features/node:1": {
+    "version": "24",
+    "nodeGypDependencies": true
+  },
+
+  "ghcr.io/devcontainers/features/python:1": {
+    "version": "3.13",
+    "installTools": true
+  },
+
+  "ghcr.io/devcontainers/features/go:1": {
+    "version": "1.25.1"
+  },
+
+  "ghcr.io/devcontainers/features/rust:1": {
+    "version": "latest"
+  }
+},
+
+  "remoteUser": "vscode",
+  "containerUser": "vscode",
+  "updateRemoteUserUID": true,
+
+  "mounts": [
+    "source=${localEnv:HOME}/.codex,target=/home/vscode/.codex,type=bind",
+    "source=${localEnv:HOME}/.code-index,target=/home/vscode/.code-index,type=bind",
+    "source=${localWorkspaceFolderBasename}-dind-data,target=/var/lib/docker,type=volume"
+  ],
+
+  "containerEnv": {
+    "CODE_INDEX_PATH": "/home/vscode/.code-index",
+    "UV_TOOL_BIN_DIR": "/home/vscode/.local/bin"
+  },
+
+  "remoteEnv": {
+    "NPM_TOKEN": "${localEnv:NPM_TOKEN}",
+    "PATH": "/home/vscode/.local/bin:/opt/flutter/bin:/opt/flutter/bin/cache/dart-sdk/bin:${containerEnv:PATH}"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "openai.chatgpt",
+
+        "golang.go",
+
+        "rust-lang.rust-analyzer",
+
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.debugpy",
+
+        "Dart-Code.dart-code",
+        "Dart-Code.flutter",
+
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+
+        "ms-azuretools.vscode-containers"
+      ],
+
+      "settings": {
+        "chatgpt.runCodexInWindowsSubsystemForLinux": false,
+
+        "python.defaultInterpreterPath": "/usr/local/bin/python",
+        "python.terminal.activateEnvironment": true,
+
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.fixAll.eslint": "explicit"
+        },
+
+        "terminal.integrated.defaultProfile.linux": "bash",
+
+        "files.watcherExclude": {
+          "**/.git/objects/**": true,
+          "**/.git/subtree-cache/**": true,
+          "**/.code-index/**": true
+        }
+      }
+    }
+  },
+
+  "forwardPorts": [
+    3000,
+    5173,
+    8000,
+    8080,
+    8081,
+    4222,
+    8222
+  ],
+
+  "portsAttributes": {
+    "3000": {
+      "label": "React"
+    },
+    "5173": {
+      "label": "Vite"
+    },
+    "8000": {
+      "label": "Django"
+    },
+    "8080": {
+      "label": "Flutter Web"
+    },
+    "8081": {
+      "label": "Nginx"
+    },
+    "4222": {
+      "label": "NATS"
+    },
+    "8222": {
+      "label": "NATS Monitoring"
+    }
+  },
+
+  "postCreateCommand": "bash .devcontainer/scripts/configure-agent-tools.sh && bash .devcontainer/scripts/configure-project-runtime.sh",
+
+  "postAttachCommand": "bash .devcontainer/scripts/ensure-vscode-extensions.sh && bash .devcontainer/scripts/verify-environment.sh --brief || true",
+
+  "shutdownAction": "stopContainer"
+}
