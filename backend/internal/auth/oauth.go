@@ -85,6 +85,11 @@ func (h *Handler) Token(r *http.Request) (string, bool) {
 	return cookie.Value, true
 }
 
+// ClearToken expires the user's OAuth cookie after Cloudflare rejects it.
+func (h *Handler) ClearToken(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: accessCookieName, Value: "", Path: "/", Expires: time.Unix(1, 0), MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+}
+
 func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 	state, err := randomURLToken(32)
 	if err != nil {
