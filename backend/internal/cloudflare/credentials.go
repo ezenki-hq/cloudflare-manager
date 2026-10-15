@@ -125,6 +125,12 @@ func (c *Client) RevokeCredential(ctx context.Context, bearer, accountID, tokenI
 	}
 	var token accountToken
 	_, err := c.request(ctx, bearer, http.MethodGet, "/accounts/"+url.PathEscape(accountID)+"/tokens/"+url.PathEscape(tokenID), "", nil, &token)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+		// A previous cleanup attempt may have deleted the token before the
+		// Deploy Commander record was removed. Treat that state as revoked.
+		return nil
+	}
 	if err != nil {
 		return err
 	}

@@ -135,3 +135,14 @@ func TestRevokeManagedToken(t *testing.T) {
 		t.Fatal("managed token was not deleted")
 	}
 }
+
+func TestRevokeAlreadyMissingTokenIsIdempotent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"success":false,"errors":[{"message":"not found"}]}`))
+	}))
+	defer server.Close()
+	if err := NewClient(server.URL, server.Client()).RevokeCredential(context.Background(), "user-token", "account1", "token-123", "conn-123"); err != nil {
+		t.Fatalf("repeated revoke should be safe: %v", err)
+	}
+}
