@@ -9,7 +9,7 @@ const backendOrigin = import.meta.env.VITE_BACKEND_ORIGIN?.trim() || window.loca
 const bridge = createCommanderBridge();
 const api = createBackendAPI(backendOrigin);
 const defaults = {
-  backendImage: import.meta.env.VITE_BACKEND_IMAGE?.trim() ?? "",
+  backendImage: import.meta.env.VITE_BACKEND_IMAGE?.trim() || "ezenki/cloudflare-manager:latest",
   runnerImage: import.meta.env.VITE_RUNNER_IMAGE?.trim() ?? "",
   clientId: import.meta.env.VITE_CF_CLIENT_ID?.trim() ?? "",
   publicOrigin: import.meta.env.VITE_PUBLIC_ORIGIN?.trim() ?? "",

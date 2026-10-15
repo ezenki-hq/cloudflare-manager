@@ -35,7 +35,7 @@ export function InstallPanel({ defaults, history, active, installed, onInstall }
     </div>
     {history && <RunSummary history={history} />}
     {!installed && <form className="install-form" onSubmit={submit}>
-      <label>Backend image<input required value={values.backendImage} onChange={set("backendImage")} placeholder="ghcr.io/org/cloudflare-manager:1.0.0" /></label>
+      <label>Backend image<input required value={values.backendImage} onChange={set("backendImage")} placeholder="ezenki/cloudflare-manager:latest" /></label>
       <label>Runner image<input required value={values.runnerImage} onChange={set("runnerImage")} placeholder="ezenki/deploy-commander-runner:1.2.3" /></label>
       <label>Cloudflare OAuth client ID<input required value={values.clientId} onChange={set("clientId")} autoComplete="off" /></label>
       <label>Manager public origin<input required type="url" value={values.publicOrigin} onChange={set("publicOrigin")} placeholder="https://cf-manager.example.com" /></label>

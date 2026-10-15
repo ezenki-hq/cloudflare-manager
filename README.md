@@ -26,7 +26,7 @@ Cloudflare OAuth scope names match API token permission names. Select the corres
 
 ## Build and publish the manager interface
 
-The published interface must be able to reach the Go service over HTTPS. Set the Vite variables in the build environment or a local ignored `frontend/.env` file. `VITE_BACKEND_ORIGIN` is the manager's public API origin; `VITE_COMMANDER_ORIGIN` is the exact origin serving Deploy Commander. These must be subdomains on the same registrable site. The Go API allows only the configured Commander origin.
+The published interface must be able to reach the Go service over HTTPS. Set the Vite variables in the build environment or a local ignored `frontend/.env` file. `VITE_BACKEND_ORIGIN` is the manager's public API origin, and `VITE_COMMANDER_ORIGIN` is the exact origin serving Deploy Commander. These must be subdomains on the same registrable site. The Go API allows only the configured Commander origin. The installer defaults to `ezenki/cloudflare-manager:latest`.
 
 ```sh
 cd frontend
@@ -40,21 +40,9 @@ For publishing, put `COMMANDER_URL`, `COMMANDER_USERNAME`, and `COMMANDER_PASSWO
 
 ### Build the service image
 
-The final stage uses `gcr.io/distroless/static-debian12:nonroot`; the statically built Go service and frontend assets run on the minimal distroless base as UID 65532. Build and push the service image to a registry reachable by the Deploy Commander runner. Set image and origin defaults at build time so the installation form is prefilled:
+The Go service and frontend assets run as UID 65532 on `gcr.io/distroless/static-debian12:nonroot`. `build.sh` builds and pushes `ezenki/cloudflare-manager:latest` for the default platforms. Set `IMAGE`, `TAG`, or `PLATFORMS` to change the image name, tag, or target platforms.
 
-```sh
-docker build \
-  --build-arg VITE_BACKEND_ORIGIN=https://cloudflare-manager.example.com \
-  --build-arg VITE_BACKEND_IMAGE=ghcr.io/your-org/cloudflare-manager:1.0.0 \
-  --build-arg VITE_RUNNER_IMAGE=ezenki/deploy-commander-runner:REPLACE_WITH_SUPPORTED_VERSION \
-  --build-arg VITE_CF_CLIENT_ID=replace-with-cloudflare-oauth-client-id \
-  --build-arg VITE_PUBLIC_ORIGIN=https://cloudflare-manager.example.com \
-  --build-arg VITE_COMMANDER_ORIGIN=https://commander.example.com \
-  -t ghcr.io/your-org/cloudflare-manager:1.0.0 .
-docker push ghcr.io/your-org/cloudflare-manager:1.0.0
-```
-
-Use an immutable version tag or SHA-256 digest for both the manager and runner images. Check the current supported runner image and digest in the Deploy Commander staging environment before production use. The browser install form validates tagged or digested images.
+Keep the runner pinned to a version tag or SHA-256 digest, and check the supported runner reference in Deploy Commander staging before production use.
 
 ## Install and operate
 

@@ -28,6 +28,12 @@ describe("initial installer", () => {
     expect(JSON.stringify(metadata)).not.toMatch(/client_secret|password|access_token/i);
   });
 
+  it("uses the full-stack latest image and keeps the runner pinned", () => {
+    const options = buildInstallRun({ ...input, backendImage: "ezenki/cloudflare-manager:latest", managerId: "manager-uuid" });
+    expect((options.metadata as any).services["cloudflare-manager"].image).toBe("ezenki/cloudflare-manager:latest");
+    expect(() => buildInstallRun({ ...input, runnerImage: "ezenki/deploy-commander-runner:latest", managerId: "manager-uuid" })).toThrow(/runner image.*version tag or SHA-256 digest/i);
+  });
+
   it("gets the manager identity from trusted RPC and starts one install run", async () => {
     const caller = { getManager: vi.fn().mockResolvedValue("manager-uuid"), getLatestRun: vi.fn().mockResolvedValue(null), start: vi.fn().mockResolvedValue({ id: "run-1", queued_at: "now", status: 0 }) } as unknown as RPCCaller;
     const result = await startInstall(caller, input);

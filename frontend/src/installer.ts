@@ -17,7 +17,7 @@ export interface InstallInput {
 
 export function buildInstallRun(input: InstallInput & { managerId: string }): StartRunOptions {
   const managerId = requireString(input.managerId, "manager ID");
-  requireImmutableImage(input.backendImage, "backend image");
+  requireImageReference(input.backendImage, "backend image", true);
   requireImmutableImage(input.runnerImage, "runner image");
   requireString(input.clientId, "Cloudflare OAuth client ID");
   validateSameSiteOrigins(input.publicOrigin, input.commanderOrigin);
@@ -82,11 +82,15 @@ function parseHTTPSOrigin(value: string, label: string): URL {
 }
 
 function requireImmutableImage(value: string, label: string): void {
+  requireImageReference(value, label, false);
+}
+
+function requireImageReference(value: string, label: string, allowLatest: boolean): void {
   if (!value.trim() || /\s/.test(value)) throw new Error(`${label} is required`);
   if (/@sha256:[a-f0-9]{64}$/.test(value)) return;
   const lastPart = value.slice(value.lastIndexOf("/") + 1);
   const separator = lastPart.lastIndexOf(":");
-  if (separator <= 0 || lastPart.slice(separator + 1) === "latest") throw new Error(`${label} must use a version tag or SHA-256 digest`);
+  if (separator <= 0 || (!allowLatest && lastPart.slice(separator + 1) === "latest")) throw new Error(`${label} must use a version tag or SHA-256 digest`);
 }
 
 function requireString(value: string, label: string): string {
