@@ -40,7 +40,7 @@ For publishing, put `COMMANDER_URL`, `COMMANDER_USERNAME`, and `COMMANDER_PASSWO
 
 ### Build the service image
 
-Build and push the service image to a registry reachable by the Deploy Commander runner. Set image and origin defaults at build time so the installation form is prefilled:
+The final stage uses `gcr.io/distroless/static-debian12:nonroot`; the statically built Go service and frontend assets run on the minimal distroless base as UID 65532. Build and push the service image to a registry reachable by the Deploy Commander runner. Set image and origin defaults at build time so the installation form is prefilled:
 
 ```sh
 docker build \
