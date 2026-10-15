@@ -54,7 +54,14 @@ func NewHandler(cfg Config, oauth *auth.Handler, cf *cloudflare.Client) http.Han
 		writeError(w, http.StatusNotFound, "not_found", "API route not found")
 	})
 	if strings.TrimSpace(cfg.StaticDir) != "" {
-		mux.Handle("GET /", staticHandler(cfg.StaticDir))
+		static := staticHandler(cfg.StaticDir)
+		mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodGet {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			static.ServeHTTP(w, r)
+		}))
 	}
 	return s.corsAndCache(mux)
 }

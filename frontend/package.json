@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
-    "test": "vitest"
+    "test": "vitest",
+    "publish:manager": "deploy-commander publish"
   },
   "dependencies": {
     "@ezenki/deploy-commander-installer-interface": "0.7.0",

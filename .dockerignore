@@ -1,0 +1,11 @@
+.git
+.superpowers
+.env
+.env.*
+!.env.example
+**/node_modules
+**/dist
+**/coverage
+**/*.tsbuildinfo
+docs
+

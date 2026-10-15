@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,6 +14,26 @@ import (
 )
 
 const testOrigin = "https://commander.example.test"
+
+func TestStaticFallbackCanBeRegisteredAlongsideAPI(t *testing.T) {
+	staticDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("manager interface"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(Config{FrontendOrigin: testOrigin, StaticDir: staticDir}, nil, cloudflare.NewClient("https://api.cloudflare.com", nil))
+	for _, path := range []string{"/", "/dashboard"} {
+		resp := httptest.NewRecorder()
+		h.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, path, nil))
+		if resp.Code != http.StatusOK || resp.Body.String() != "manager interface" {
+			t.Errorf("GET %s returned %d body=%q", path, resp.Code, resp.Body.String())
+		}
+	}
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/unknown", nil))
+	if resp.Code != http.StatusNotFound || !strings.Contains(resp.Body.String(), "API route not found") {
+		t.Fatalf("API fallback returned %d body=%q", resp.Code, resp.Body.String())
+	}
+}
 
 func setup(t *testing.T, cfServer http.HandlerFunc) (http.Handler, *httptest.Server, *http.Cookie) {
 	t.Helper()

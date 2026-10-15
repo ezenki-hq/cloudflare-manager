@@ -194,7 +194,7 @@ export function App({ bridge, api, backendOrigin, installDefaults }: AppProps) {
         try {
           const detail = await caller.getConnection(item.id);
           const metadata = isRecord(detail.config.metadata) ? detail.config.metadata : {};
-          return { id: item.id, manager: item.manager, metadata };
+          return isManagedConnection(metadata) ? { id: item.id, manager: item.manager, metadata } : null;
         } catch { return null; }
       }));
       setConnections(saved.filter((item): item is NonNullable<typeof item> => item !== null));
@@ -396,7 +396,15 @@ function message(error: unknown): string { return error instanceof Error ? error
 function isRecord(value: unknown): value is Record<string, any> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function accountName(accounts: Account[], id: string): string { return accounts.find((account) => account.id === id)?.name ?? id; }
 function s3Endpoint(accountId: string, jurisdiction: string): string { return `https://${accountId}${jurisdiction === "default" ? "" : `.${jurisdiction}`}.r2.cloudflarestorage.com`; }
-function isManagedConnection(value: unknown): boolean { return isRecord(value) && ["pending", "ready", "revoke_pending", "revoked"].includes(String(value.status)) && (value.permission === "read-only" || value.permission === "read-write"); }
+function isManagedConnection(value: unknown): boolean {
+  return isRecord(value)
+    && ["pending", "ready", "revoke_pending", "revoked"].includes(String(value.status))
+    && (value.permission === "read-only" || value.permission === "read-write")
+    && typeof value.accountId === "string"
+    && typeof value.bucket === "string"
+    && typeof value.jurisdiction === "string"
+    && typeof value.endpoint === "string";
+}
 async function listAllConnections(caller: CommanderBridge["caller"], resource: string) {
   const result: Awaited<ReturnType<typeof caller.getConnections>>["items"] = [];
   const limit = 100;
