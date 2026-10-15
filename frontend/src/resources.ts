@@ -19,11 +19,8 @@ interface BucketMetadata {
 }
 
 export async function registerBucket(caller: RPCCaller, bucket: ManagedBucket): Promise<string> {
-  const resources = await allBucketResources(caller);
-  for (const resource of resources) {
-    const saved = await caller.getResource(resource.id);
-    if (matchesBucket(saved, bucket)) return saved.resource.id;
-  }
+  const existing = await findBucketResource(caller, bucket);
+  if (existing) return existing.resource.id;
   const metadata: BucketMetadata = {
     account_id: bucket.accountId,
     jurisdiction: bucket.jurisdiction,
@@ -33,6 +30,24 @@ export async function registerBucket(caller: RPCCaller, bucket: ManagedBucket): 
   };
   const created = await caller.createResource({ metadata, name: bucket.name }, false, bucket.name, BUCKET_RESOURCE_TYPE);
   return created.resource.id;
+}
+
+export async function findBucketResource(caller: RPCCaller, bucket: ManagedBucket) {
+  const resources = await allBucketResources(caller);
+  for (const resource of resources) {
+    const saved = await caller.getResource(resource.id);
+    if (matchesBucket(saved, bucket)) return saved;
+  }
+  return null;
+}
+
+export async function setBucketPrimaryDomain(caller: RPCCaller, resourceId: string, domain?: string): Promise<void> {
+  if (!resourceId.trim()) throw new Error("Resource ID is required");
+  const saved = await caller.getResource(resourceId);
+  const metadata = isRecord(saved.config.metadata) ? { ...saved.config.metadata } : {};
+  if (domain) metadata.primary_domain = domain;
+  else delete metadata.primary_domain;
+  await caller.updateResource(resourceId, { config: { metadata } });
 }
 
 export async function removeBucketRecord(caller: RPCCaller, resourceId: string): Promise<void> {

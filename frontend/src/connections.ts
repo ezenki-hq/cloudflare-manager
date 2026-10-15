@@ -19,6 +19,7 @@ interface BucketIdentity {
 }
 
 interface ConnectionMetadata extends BucketIdentity {
+  aws_region: "auto";
   permission: "read-only" | "read-write";
   status: "pending" | "ready" | "revoke_pending" | "revoked";
   token_id?: string;
@@ -29,7 +30,7 @@ export async function provisionConnection(caller: RPCCaller, api: BackendAPI, in
   validateId(input.managerId, "application manager ID");
   if (input.permission !== "read-only" && input.permission !== "read-write") throw new Error("Invalid R2 access permission");
   const identity = await getBucketIdentity(caller, input.resourceId);
-  const pending: ConnectionMetadata = { ...identity, permission: input.permission, status: "pending" };
+  const pending: ConnectionMetadata = { ...identity, aws_region: "auto", permission: input.permission, status: "pending" };
   const created = await caller.createConnection(pending, input.managerId, false, input.resourceId, input.labels);
   const id = created.connection.id;
   if (!id) throw new Error("Deploy Commander returned a connection without an ID");
@@ -147,6 +148,7 @@ function asConnectionMetadata(value: unknown): ConnectionMetadata {
     bucket: requiredString(value.bucket ?? value.bucket_name, "connection bucket name"),
     jurisdiction: requiredString(value.jurisdiction, "connection jurisdiction"),
     endpoint: requiredString(value.endpoint ?? value.s3_endpoint, "connection S3 endpoint"),
+    aws_region: "auto",
     permission,
     status: status as ConnectionMetadata["status"],
     ...(typeof value.token_id === "string" ? { token_id: value.token_id } : {}),
