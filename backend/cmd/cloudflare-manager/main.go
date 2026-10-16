@@ -43,14 +43,14 @@ func serve() error {
 		return fmt.Errorf("CF_CLIENT_ID, PUBLIC_ORIGIN, and COMMANDER_ORIGIN are required")
 	}
 	oauth, err := auth.NewHandler(auth.Config{
-		ClientID: clientID, PublicOrigin: publicOrigin, FrontendOrigin: commanderOrigin,
+		ClientID: clientID, PublicOrigin: publicOrigin, CommanderOrigin: commanderOrigin,
 		AuthorizationURL: defaultAuthorizationURL, TokenURL: defaultTokenURL,
 	}, &http.Client{Timeout: 12 * time.Second}, time.Now)
 	if err != nil {
 		return fmt.Errorf("configure OAuth: %w", err)
 	}
 	api := cloudflare.NewClient("https://api.cloudflare.com", &http.Client{Timeout: 20 * time.Second})
-	handler := server.NewHandler(server.Config{FrontendOrigin: commanderOrigin, StaticDir: os.Getenv("STATIC_DIR")}, oauth, api)
+	handler := server.NewHandler(server.Config{PublicOrigin: publicOrigin, CommanderOrigin: commanderOrigin, StaticDir: os.Getenv("STATIC_DIR")}, oauth, api)
 	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
 		port = defaultPort

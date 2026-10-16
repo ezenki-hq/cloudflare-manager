@@ -19,8 +19,9 @@ import (
 const maxJSONBody = 32 << 10
 
 type Config struct {
-	FrontendOrigin string
-	StaticDir      string
+	PublicOrigin    string
+	CommanderOrigin string
+	StaticDir       string
 }
 
 type Server struct {
@@ -328,7 +329,7 @@ func (s *Server) corsAndCache(next http.Handler) http.Handler {
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		origin := r.Header.Get("Origin")
-		allowed := origin != "" && origin == s.cfg.FrontendOrigin
+		allowed := origin != "" && (origin == s.cfg.PublicOrigin || origin == s.cfg.CommanderOrigin)
 		if origin != "" {
 			w.Header().Add("Vary", "Origin")
 		}

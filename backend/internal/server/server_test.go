@@ -20,7 +20,7 @@ func TestStaticFallbackCanBeRegisteredAlongsideAPI(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("manager interface"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandler(Config{FrontendOrigin: testOrigin, StaticDir: staticDir}, nil, cloudflare.NewClient("https://api.cloudflare.com", nil))
+	h := NewHandler(Config{PublicOrigin: "https://manager.example.test", CommanderOrigin: testOrigin, StaticDir: staticDir}, nil, cloudflare.NewClient("https://api.cloudflare.com", nil))
 	for _, path := range []string{"/", "/dashboard"} {
 		resp := httptest.NewRecorder()
 		h.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, path, nil))
@@ -39,13 +39,30 @@ func setup(t *testing.T, cfServer http.HandlerFunc) (http.Handler, *httptest.Ser
 	t.Helper()
 	upstream := httptest.NewServer(cfServer)
 	client := cloudflare.NewClient(upstream.URL, upstream.Client())
-	oauth, err := auth.NewHandler(auth.Config{ClientID: "client", PublicOrigin: "https://manager.example.test", FrontendOrigin: testOrigin, AuthorizationURL: "https://cloudflare.example.test/authorize", TokenURL: "https://cloudflare.example.test/token"}, nil, nil)
+	oauth, err := auth.NewHandler(auth.Config{ClientID: "client", PublicOrigin: "https://manager.example.test", CommanderOrigin: testOrigin, AuthorizationURL: "https://cloudflare.example.test/authorize", TokenURL: "https://cloudflare.example.test/token"}, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandler(Config{FrontendOrigin: testOrigin}, oauth, client)
+	h := NewHandler(Config{PublicOrigin: "https://manager.example.test", CommanderOrigin: testOrigin}, oauth, client)
 	cookie := &http.Cookie{Name: "__Host-cf-access", Value: "per-user-token", Path: "/", Secure: true, HttpOnly: true}
 	return h, upstream, cookie
+}
+
+func TestPublicAndCommanderOriginsAreAllowed(t *testing.T) {
+	h, upstream, cookie := setup(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"result":[]}`))
+	})
+	defer upstream.Close()
+	for _, origin := range []string{"https://manager.example.test", testOrigin} {
+		req := httptest.NewRequest(http.MethodGet, "/api/accounts", nil)
+		req.AddCookie(cookie)
+		req.Header.Set("Origin", origin)
+		resp := httptest.NewRecorder()
+		h.ServeHTTP(resp, req)
+		if resp.Header().Get("Access-Control-Allow-Origin") != origin {
+			t.Errorf("origin %q not allowed: status=%d headers=%v", origin, resp.Code, resp.Header())
+		}
+	}
 }
 
 func TestOriginRejectsMutation(t *testing.T) {

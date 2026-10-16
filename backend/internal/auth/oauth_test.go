@@ -31,7 +31,7 @@ func TestOAuthPKCEAndCookie(t *testing.T) {
 
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	h, err := NewHandler(Config{
-		ClientID: "client-id", PublicOrigin: "https://manager.example.test", FrontendOrigin: "https://commander.example.test",
+		ClientID: "client-id", PublicOrigin: "https://manager.example.test", CommanderOrigin: "https://commander.example.test",
 		AuthorizationURL: "https://cloudflare.example.test/oauth/authorize", TokenURL: tokenServer.URL,
 	}, tokenServer.Client(), func() time.Time { return now })
 	if err != nil {
@@ -41,7 +41,7 @@ func TestOAuthPKCEAndCookie(t *testing.T) {
 	h.Register(mux)
 
 	start := httptest.NewRecorder()
-	mux.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/auth/start", nil))
+	mux.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/auth/start?opener_origin=https%3A%2F%2Fcommander.example.test", nil))
 	if start.Code != http.StatusFound {
 		t.Fatalf("start status = %d", start.Code)
 	}
@@ -119,14 +119,14 @@ func TestOAuthRejectsStateMismatch(t *testing.T) {
 	exchanges := 0
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { exchanges++ }))
 	defer tokenServer.Close()
-	h, err := NewHandler(Config{ClientID: "id", PublicOrigin: "https://manager.example", FrontendOrigin: "https://commander.example", AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: tokenServer.URL}, tokenServer.Client(), time.Now)
+	h, err := NewHandler(Config{ClientID: "id", PublicOrigin: "https://manager.example", CommanderOrigin: "https://commander.example", AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: tokenServer.URL}, tokenServer.Client(), time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
 	h.Register(mux)
 	start := httptest.NewRecorder()
-	mux.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/auth/start", nil))
+	mux.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/auth/start?opener_origin=https%3A%2F%2Fcommander.example", nil))
 	cookie := start.Result().Cookies()[0]
 	callback := httptest.NewRequest(http.MethodGet, "/auth/callback?code=bad&state=attacker", nil)
 	callback.AddCookie(cookie)
@@ -143,7 +143,7 @@ func TestOAuthRejectsStateMismatch(t *testing.T) {
 }
 
 func TestSessionExpires(t *testing.T) {
-	h, err := NewHandler(Config{ClientID: "id", PublicOrigin: "https://manager.example", FrontendOrigin: "https://commander.example", AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token"}, http.DefaultClient, time.Now)
+	h, err := NewHandler(Config{ClientID: "id", PublicOrigin: "https://manager.example", CommanderOrigin: "https://commander.example", AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token"}, http.DefaultClient, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,5 +153,48 @@ func TestSessionExpires(t *testing.T) {
 	mux.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/session", nil))
 	if r.Code != http.StatusUnauthorized {
 		t.Fatalf("session status = %d, want 401", r.Code)
+	}
+}
+
+func TestOAuthStartValidatesAndStoresOpenerOrigin(t *testing.T) {
+	h, err := NewHandler(Config{ClientID: "id", PublicOrigin: "https://manager.example", CommanderOrigin: "https://commander.example", AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token"}, http.DefaultClient, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	h.Register(mux)
+	for _, origin := range []string{"https://manager.example", "https://commander.example"} {
+		t.Run(origin, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/auth/start?opener_origin="+url.QueryEscape(origin), nil)
+			result := httptest.NewRecorder()
+			mux.ServeHTTP(result, req)
+			if result.Code != http.StatusFound {
+				t.Fatalf("status=%d body=%s", result.Code, result.Body.String())
+			}
+			cookies := result.Result().Cookies()
+			if len(cookies) != 1 {
+				t.Fatalf("cookies=%v", cookies)
+			}
+			state, err := decodeTransient(cookies[0].Value)
+			if err != nil || state.OpenerOrigin != origin {
+				t.Fatalf("state=%#v err=%v", state, err)
+			}
+		})
+	}
+}
+
+func TestOAuthStartRejectsUnlistedOrMissingOpenerOrigin(t *testing.T) {
+	h, err := NewHandler(Config{ClientID: "id", PublicOrigin: "https://manager.example", CommanderOrigin: "https://commander.example", AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token"}, http.DefaultClient, time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	h.Register(mux)
+	for _, target := range []string{"/auth/start", "/auth/start?opener_origin=https%3A%2F%2Fevil.example", "/auth/start?opener_origin=https%3A%2F%2Fcommander.example%2Fpath"} {
+		result := httptest.NewRecorder()
+		mux.ServeHTTP(result, httptest.NewRequest(http.MethodGet, target, nil))
+		if result.Code != http.StatusBadRequest || len(result.Result().Cookies()) != 0 {
+			t.Errorf("%s status=%d cookies=%v", target, result.Code, result.Result().Cookies())
+		}
 	}
 }

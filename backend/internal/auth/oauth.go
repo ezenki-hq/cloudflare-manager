@@ -21,11 +21,11 @@ const (
 	maxTokenResponse = 1 << 20
 )
 
-// Config describes the public OAuth endpoints and the single trusted browser origin.
+// Config describes the OAuth endpoints and the configured browser origins.
 type Config struct {
 	ClientID         string
 	PublicOrigin     string
-	FrontendOrigin   string
+	CommanderOrigin  string
 	AuthorizationURL string
 	TokenURL         string
 }
@@ -37,8 +37,9 @@ type Handler struct {
 }
 
 type transientState struct {
-	State    string `json:"s"`
-	Verifier string `json:"v"`
+	State        string `json:"s"`
+	Verifier     string `json:"v"`
+	OpenerOrigin string `json:"o"`
 }
 
 type tokenResponse struct {
@@ -53,8 +54,8 @@ func NewHandler(cfg Config, client *http.Client, now func() time.Time) (*Handler
 	if err := validateOrigin(cfg.PublicOrigin); err != nil {
 		return nil, fmt.Errorf("invalid public origin: %w", err)
 	}
-	if err := validateOrigin(cfg.FrontendOrigin); err != nil {
-		return nil, fmt.Errorf("invalid frontend origin: %w", err)
+	if err := validateOrigin(cfg.CommanderOrigin); err != nil {
+		return nil, fmt.Errorf("invalid Commander origin: %w", err)
 	}
 	if err := validateEndpoint(cfg.AuthorizationURL); err != nil {
 		return nil, fmt.Errorf("invalid authorization URL: %w", err)
@@ -91,6 +92,11 @@ func (h *Handler) ClearToken(w http.ResponseWriter) {
 }
 
 func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
+	openerOrigin := r.URL.Query().Get("opener_origin")
+	if !h.allowedOpenerOrigin(openerOrigin) {
+		http.Error(w, "browser origin is not allowed", http.StatusBadRequest)
+		return
+	}
 	state, err := randomURLToken(32)
 	if err != nil {
 		http.Error(w, "unable to start authorization", http.StatusInternalServerError)
@@ -101,7 +107,7 @@ func (h *Handler) start(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unable to start authorization", http.StatusInternalServerError)
 		return
 	}
-	payload, err := json.Marshal(transientState{State: state, Verifier: verifier})
+	payload, err := json.Marshal(transientState{State: state, Verifier: verifier, OpenerOrigin: openerOrigin})
 	if err != nil {
 		http.Error(w, "unable to start authorization", http.StatusInternalServerError)
 		return
@@ -132,7 +138,7 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state, err := decodeTransient(stateCookie.Value)
-	if err != nil || state.State == "" || state.Verifier == "" || r.URL.Query().Get("state") == "" || r.URL.Query().Get("state") != state.State {
+	if err != nil || state.State == "" || state.Verifier == "" || !h.allowedOpenerOrigin(state.OpenerOrigin) || r.URL.Query().Get("state") == "" || r.URL.Query().Get("state") != state.State {
 		http.Error(w, "authorization state did not match", http.StatusBadRequest)
 		return
 	}
@@ -154,7 +160,11 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.WriteString(w, `<!doctype html><meta charset="utf-8"><title>Cloudflare connected</title><script>if(window.opener){window.opener.postMessage({type:"cloudflare-oauth-complete"},`+strconvQuote(h.cfg.FrontendOrigin)+`)}window.close()</script><p>Cloudflare authorization finished. You can close this window.</p>`)
+	_, _ = io.WriteString(w, `<!doctype html><meta charset="utf-8"><title>Cloudflare connected</title><script>if(window.opener){window.opener.postMessage({type:"cloudflare-oauth-complete"},`+strconvQuote(state.OpenerOrigin)+`)}window.close()</script><p>Cloudflare authorization finished. You can close this window.</p>`)
+}
+
+func (h *Handler) allowedOpenerOrigin(origin string) bool {
+	return origin == h.cfg.PublicOrigin || origin == h.cfg.CommanderOrigin
 }
 
 func (h *Handler) exchange(r *http.Request, code, verifier string) (string, time.Duration, error) {
