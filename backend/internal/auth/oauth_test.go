@@ -198,3 +198,33 @@ func TestOAuthStartRejectsUnlistedOrMissingOpenerOrigin(t *testing.T) {
 		}
 	}
 }
+
+func TestOAuthCallbackTargetsSavedPublicOrigin(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "token", "expires_in": 300})
+	}))
+	defer tokenServer.Close()
+	h, err := NewHandler(Config{ClientID: "id", PublicOrigin: "https://manager.example", CommanderOrigin: "https://commander.example", AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: tokenServer.URL}, tokenServer.Client(), time.Now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	h.Register(mux)
+	start := httptest.NewRecorder()
+	mux.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/auth/start?opener_origin=https%3A%2F%2Fmanager.example", nil))
+	if start.Code != http.StatusFound {
+		t.Fatalf("start status=%d", start.Code)
+	}
+	state := start.Result().Cookies()[0]
+	location, err := url.Parse(start.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	callback := httptest.NewRequest(http.MethodGet, "/auth/callback?code=ok&state="+url.QueryEscape(location.Query().Get("state")), nil)
+	callback.AddCookie(state)
+	result := httptest.NewRecorder()
+	mux.ServeHTTP(result, callback)
+	if result.Code != http.StatusOK || !strings.Contains(result.Body.String(), `postMessage({type:"cloudflare-oauth-complete"},"https://manager.example")`) {
+		t.Fatalf("callback status=%d body=%s", result.Code, result.Body.String())
+	}
+}
