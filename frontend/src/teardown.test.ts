@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RPCCaller } from "@ezenki/deploy-commander-installer-interface";
 import type { BackendAPI } from "./api";
-import { loadRunHistory, startTeardown } from "./teardown";
+import { loadLatestTeardown } from "./runHistory";
+import { startTeardown } from "./teardown";
 
 const resourceId = "bucket-resource";
 const connectionId = "application-connection";
@@ -17,9 +18,12 @@ function mocks() {
     updateConnection: vi.fn().mockResolvedValue(undefined),
     deleteConnection: vi.fn().mockResolvedValue(undefined).mockImplementation(async () => { sequence.push("connection"); }),
     deleteResource: vi.fn().mockResolvedValue(undefined).mockImplementation(async () => { sequence.push("resource"); }),
-    getLatestRun: vi.fn().mockResolvedValue({ id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }),
+    getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown"
+      ? { id: "teardown-run", action: "teardown", status: 2, created_at: "", queued_at: "", updated_at: "" }
+      : { id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }),
     getRun: vi.fn().mockResolvedValue({ run: { id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }, config: { action: "install", manager: "manager", run: "install-run", runner: "ezenki/deploy-commander-runner:1.2.3", metadata: {} } }),
     getRunUpdates: vi.fn().mockResolvedValue({ events: { events: [] }, logs: { items: [] } }),
+    getRunEvents: vi.fn().mockResolvedValue({ events: [{ seq: 3, message: "Runner stopped" }], limit: 1, offset: 0, total: 3 }),
     start: vi.fn().mockImplementation(async (options: any) => { sequence.push("start"); return { id: "teardown-run", queued_at: "now", status: 0, options }; }),
   } as unknown as RPCCaller;
   const api = {
@@ -57,11 +61,11 @@ describe("manager teardown", () => {
     expect(caller.start).not.toHaveBeenCalled();
   });
 
-  it("recovers latest durable run status and updates after reload", async () => {
+  it("recovers the latest durable teardown event after reload", async () => {
     const { caller } = mocks();
-    const history = await loadRunHistory(caller, "install");
-    expect(caller.getLatestRun).toHaveBeenCalledWith({ action: "install" });
-    expect(caller.getRunUpdates).toHaveBeenCalledWith({ run_id: "install-run", event_after_seq: 0, log_after_seq: 0, limit: 100 });
-    expect(history?.run.id).toBe("install-run");
+    const history = await loadLatestTeardown(caller);
+    expect(caller.getLatestRun).toHaveBeenCalledWith({ action: "teardown" });
+    expect(caller.getRunEvents).toHaveBeenCalledWith({ run_id: "teardown-run", limit: 1, order: "desc" });
+    expect(history?.lastEvent).toEqual({ seq: 3, message: "Runner stopped" });
   });
 });

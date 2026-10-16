@@ -1,6 +1,0 @@
-{
-  "name": "Cloudflare Manager",
-  "kind": "cloudflare",
-  "description": "Manage Cloudflare R2 buckets, custom domains, and scoped application access.",
-  "buildDirectory": "dist"
-}

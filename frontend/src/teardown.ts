@@ -1,22 +1,9 @@
-import type { RPCCaller, RunItem } from "@ezenki/deploy-commander-installer-interface";
+import type { RPCCaller } from "@ezenki/deploy-commander-installer-interface";
 import type { BackendAPI } from "./api";
 import { revokeConnection } from "./connections";
-import type { StartResponse } from "./installer";
 import { BUCKET_RESOURCE_TYPE, removeBucketRecord } from "./resources";
 
-export interface RunHistory {
-  run: RunItem;
-  updates: Awaited<ReturnType<RPCCaller["getRunUpdates"]>>;
-}
-
-export async function loadRunHistory(caller: RPCCaller, action: string): Promise<RunHistory | null> {
-  const run = await caller.getLatestRun({ action });
-  if (!run) return null;
-  const updates = await caller.getRunUpdates({ run_id: run.id, event_after_seq: 0, log_after_seq: 0, limit: 100 });
-  return { run, updates };
-}
-
-export async function startTeardown(caller: RPCCaller, api: BackendAPI): Promise<StartResponse> {
+export async function startTeardown(caller: RPCCaller, api: BackendAPI): Promise<Awaited<ReturnType<RPCCaller["start"]>>> {
   await ensureNoActiveTeardown(caller);
   const session = await api.session();
   if (!session.authenticated) throw new Error("Sign in to Cloudflare before tearing down the manager");

@@ -1,18 +1,10 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RPCCaller } from "@ezenki/deploy-commander-installer-interface";
 import type { BackendAPI } from "./api";
 import type { CommanderBridge } from "./commander";
 import { App } from "./App";
-
-const installDefaults = {
-  backendImage: "ghcr.io/ezenki/cloudflare-manager:1.2.3",
-  runnerImage: "ezenki/deploy-commander-runner:1.2.3",
-  clientId: "oauth-client",
-  publicOrigin: "https://cf-manager.example.test",
-  commanderOrigin: "https://commander.example.test",
-};
 
 function setup(apiOverrides: Partial<BackendAPI> = {}, callerOverrides: Partial<RPCCaller> = {}) {
   const api = {
@@ -32,7 +24,7 @@ function setup(apiOverrides: Partial<BackendAPI> = {}, callerOverrides: Partial<
     ...apiOverrides,
   } as unknown as BackendAPI;
   const caller = {
-    getLatestRun: vi.fn().mockImplementation(async ({ action }: { action: string }) => action === "install" ? { id: "install-1", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" } : null),
+    getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "install" ? { id: "install-1", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" } : null),
     getManager: vi.fn().mockResolvedValue("manager-1"),
     getMyResources: vi.fn().mockResolvedValue({ items: [], limit: 100, offset: 0, total: 0 }),
     getResource: vi.fn(),
@@ -49,6 +41,7 @@ function setup(apiOverrides: Partial<BackendAPI> = {}, callerOverrides: Partial<
     start: vi.fn().mockResolvedValue({ id: "run-1", queued_at: "now", status: 0 }),
     getRun: vi.fn(),
     getRunUpdates: vi.fn().mockResolvedValue({ events: { events: [] }, logs: { items: [] } }),
+    getRunEvents: vi.fn().mockResolvedValue({ events: [], limit: 1, offset: 0, total: 0 }),
     ...callerOverrides,
   } as unknown as RPCCaller;
   const handlers = new Set<(event: any) => void>();
@@ -63,16 +56,17 @@ function setup(apiOverrides: Partial<BackendAPI> = {}, callerOverrides: Partial<
 beforeEach(() => {
   vi.restoreAllMocks();
 });
+afterEach(cleanup);
 
 describe("Cloudflare Manager interface", () => {
   it("shows user initiated Cloudflare sign-in when the session is missing", async () => {
     const popup = {} as Window;
     vi.spyOn(window, "open").mockReturnValue(popup);
     const { api, caller, bridge } = setup({ session: vi.fn().mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 })) });
-    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" installDefaults={installDefaults} />);
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
     const button = await screen.findByRole("button", { name: /sign in with cloudflare/i });
     fireEvent.click(button);
-    expect(window.open).toHaveBeenCalledWith("https://cf-manager.example.test/auth/start", "cloudflare-oauth", expect.stringContaining("popup"));
+    expect(window.open).toHaveBeenCalledWith(expect.stringContaining("https://cf-manager.example.test/auth/start?opener_origin="), "cloudflare-oauth", expect.stringContaining("popup"));
     expect(caller.start).not.toHaveBeenCalled();
   });
 
@@ -80,7 +74,7 @@ describe("Cloudflare Manager interface", () => {
     const popup = {} as Window;
     vi.spyOn(window, "open").mockReturnValue(popup);
     const { api, bridge } = setup({ session: vi.fn().mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 })) });
-    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" installDefaults={installDefaults} />);
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
     fireEvent.click(await screen.findByRole("button", { name: /sign in with cloudflare/i }));
     fireEvent(window, new MessageEvent("message", { origin: "https://cf-manager.example.test", source: popup, data: { type: "cloudflare-oauth-complete" } }));
     expect(await screen.findByText(/same https site/i)).toBeTruthy();
@@ -93,7 +87,7 @@ describe("Cloudflare Manager interface", () => {
       .mockResolvedValueOnce({ buckets: [{ name: "archives", jurisdiction: "default" }] });
     const { api, bridge } = setup({ listBuckets });
     const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
-    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" installDefaults={installDefaults} />);
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
 
     expect(await screen.findByText("photos")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /next page/i }));
@@ -107,5 +101,34 @@ describe("Cloudflare Manager interface", () => {
     expect(api.deleteBucket).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /delete bucket/i }));
     await waitFor(() => expect(api.deleteBucket).toHaveBeenCalledWith("account-1", "default", "photos"));
+  });
+
+  it("keeps management visible when Commander run history is unavailable", async () => {
+    const { api, bridge } = setup({}, { getLatestRun: vi.fn().mockRejectedValue(new Error("Commander run history unavailable")) });
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
+    expect(await screen.findByText("photos")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /start installation/i })).toBeNull();
+  });
+
+  it("shows and live-updates the latest teardown event", async () => {
+    const teardown = { id: "teardown-1", action: "teardown", status: 1, created_at: "", queued_at: "", updated_at: "" };
+    const { api, bridge, caller, handlers } = setup({}, {
+      getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown" ? teardown : null),
+      getRunEvents: vi.fn().mockResolvedValue({ events: [{ seq: 7, message: "Credential cleanup started", phase: "cleanup", at: "" }], limit: 1, offset: 0, total: 7 }),
+    });
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
+    expect(await screen.findByText("Credential cleanup started")).toBeTruthy();
+    handlers.forEach((handler) => handler({ type: "event", eventType: "run-update", data: { type: "event", payload: { run_id: "teardown-1", seq: 8, message: "Redirect cleared" } } }));
+    expect(await screen.findByText("Redirect cleared")).toBeTruthy();
+    handlers.forEach((handler) => handler({ type: "event", eventType: "run-update", data: { type: "event", payload: { run_id: "teardown-1", seq: 6, message: "Old event" } } }));
+    handlers.forEach((handler) => handler({ type: "event", eventType: "run-update", data: { type: "event", payload: { run_id: "other-run", seq: 20, message: "Other run" } } }));
+    handlers.forEach((handler) => handler({ type: "event", eventType: "run-update", data: { type: "log", payload: { run_id: "teardown-1", seq: 21, message: "log entry" } } }));
+    handlers.forEach((handler) => handler({ type: "event", eventType: "run-update", data: { type: "event", payload: { run_id: "teardown-1", seq: 22, message: "" } } }));
+    expect(screen.getByText("Redirect cleared")).toBeTruthy();
+    expect(screen.queryByText("Old event")).toBeNull();
+    expect(screen.queryByText("Other run")).toBeNull();
+    expect(screen.queryByText("log entry")).toBeNull();
+    expect(screen.queryByText("Old event")).toBeNull();
+    expect(caller.getRunEvents).toHaveBeenCalledWith({ run_id: "teardown-1", limit: 1, order: "desc" });
   });
 });

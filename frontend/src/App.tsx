@@ -2,29 +2,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Account, BackendAPI, Bucket, BucketPage, Domain, Zone } from "./api";
 import type { CommanderBridge } from "./commander";
 import { provisionConnection, revokeConnection } from "./connections";
-import { InstallPanel, RunSummary } from "./components/InstallPanel";
 import { BucketDetail } from "./components/BucketDetail";
-import { startInstall as startInstallRun, type InstallInput } from "./installer";
 import { findBucketResource, registerBucket, removeBucketRecord, setBucketPrimaryDomain, type ManagedBucket } from "./resources";
-import { loadRunHistory, startTeardown, type RunHistory } from "./teardown";
+import { loadLatestTeardown, type TeardownSnapshot } from "./runHistory";
+import { startTeardown } from "./teardown";
 
 interface AppProps {
   bridge: CommanderBridge;
   api: BackendAPI;
   backendOrigin: string;
-  installDefaults: InstallInput;
 }
 
 type AuthState = "checking" | "signed-out" | "signed-in" | "blocked" | "unavailable";
 
-export function App({ bridge, api, backendOrigin, installDefaults }: AppProps) {
+export function App({ bridge, api, backendOrigin }: AppProps) {
   const { caller } = bridge;
   const popupRef = useRef<Window | null>(null);
   const bucketListRef = useRef<Bucket[]>([]);
   const [auth, setAuth] = useState<AuthState>("checking");
   const [authError, setAuthError] = useState("");
-  const [installHistory, setInstallHistory] = useState<RunHistory | null>(null);
-  const [teardownHistory, setTeardownHistory] = useState<RunHistory | null>(null);
+  const [teardownHistory, setTeardownHistory] = useState<TeardownSnapshot | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountId, setAccountId] = useState("");
   const [jurisdiction, setJurisdiction] = useState("default");
@@ -50,8 +47,6 @@ export function App({ bridge, api, backendOrigin, installDefaults }: AppProps) {
     }
   };
 
-  const installed = installHistory?.run.status === 2 && teardownHistory?.run.status !== 2;
-  const installActive = isActive(installHistory?.run.status);
   const teardownActive = isActive(teardownHistory?.run.status);
   const currentBucket = useMemo<ManagedBucket | null>(() => selectedBucket && accountId ? {
     accountId,
@@ -60,12 +55,17 @@ export function App({ bridge, api, backendOrigin, installDefaults }: AppProps) {
     s3Endpoint: s3Endpoint(accountId, selectedBucket.jurisdiction ?? jurisdiction),
   } : null, [selectedBucket, accountId, jurisdiction]);
 
-  const refreshHistory = useCallback(async (action: "install" | "teardown") => {
+  const refreshTeardown = useCallback(async () => {
     try {
-      const history = await loadRunHistory(caller, action);
-      if (action === "install") setInstallHistory(history);
-      else setTeardownHistory(history);
-      return history;
+      const snapshot = await loadLatestTeardown(caller);
+      setTeardownHistory((current) => {
+        if (!snapshot) return current?.run.status === 0 || current?.run.status === 1 ? current : null;
+        if (current?.run.id === snapshot.run.id && current.lastEvent && (!snapshot.lastEvent || current.lastEvent.seq > snapshot.lastEvent.seq)) {
+          return { ...snapshot, lastEvent: current.lastEvent };
+        }
+        return snapshot;
+      });
+      return snapshot;
     } catch {
       return null;
     }
@@ -93,20 +93,10 @@ export function App({ bridge, api, backendOrigin, installDefaults }: AppProps) {
     finally { setBucketLoading(false); }
   }, [api, accountId, jurisdiction]);
 
-  const loadRunState = useCallback(async () => {
-    await Promise.all([refreshHistory("install"), refreshHistory("teardown")]);
-  }, [refreshHistory]);
-
   useEffect(() => {
     let live = true;
+    void refreshTeardown();
     void (async () => {
-      const [installResult, teardownResult] = await Promise.all([
-        loadRunHistory(caller, "install").catch(() => null),
-        loadRunHistory(caller, "teardown").catch(() => null),
-      ]);
-      if (!live) return;
-      setInstallHistory(installResult);
-      setTeardownHistory(teardownResult);
       try {
         const session = await api.session();
         if (!live) return;
@@ -118,19 +108,29 @@ export function App({ bridge, api, backendOrigin, installDefaults }: AppProps) {
       }
     })();
     return () => { live = false; };
-  }, [api, caller]);
+  }, [api, refreshTeardown]);
 
   useEffect(() => () => bridge.wire.end(), [bridge]);
 
   useEffect(() => bridge.onEvent((event) => {
-    if (event.eventType === "run-start" && (event.data.action === "install" || event.data.action === "teardown")) {
-      void refreshHistory(event.data.action);
+    if (event.eventType === "run-start" && event.data.action === "teardown") {
+      void refreshTeardown();
+      return;
     }
-    if (event.eventType === "run-update") {
-      void refreshHistory("install");
-      void refreshHistory("teardown");
+    if (event.eventType !== "run-update") return;
+    const update = event.data;
+    if (update.type === "event") {
+      const payload = update.payload;
+      if (payload.run_id && typeof payload.seq === "number" && typeof payload.message === "string" && payload.message.trim()) {
+        const { run_id: runId, seq, message: eventMessage } = payload;
+        setTeardownHistory((current) => {
+          if (!current || current.run.id !== runId || current.lastEvent && seq <= current.lastEvent.seq) return current;
+          return { ...current, lastEvent: { seq, message: eventMessage } };
+        });
+      }
     }
-  }), [bridge, refreshHistory]);
+    void refreshTeardown();
+  }), [bridge, refreshTeardown]);
 
   useEffect(() => {
     if (auth === "signed-in") void loadAccounts();
@@ -159,8 +159,9 @@ export function App({ bridge, api, backendOrigin, installDefaults }: AppProps) {
   }, [api, backendOrigin]);
 
   const signIn = () => {
-    const url = `${backendOrigin.replace(/\/$/, "")}/auth/start`;
-    popupRef.current = window.open(url, "cloudflare-oauth", "popup,width=640,height=760");
+    const url = new URL("/auth/start", backendOrigin || window.location.origin);
+    url.searchParams.set("opener_origin", window.location.origin);
+    popupRef.current = window.open(url.toString(), "cloudflare-oauth", "popup,width=640,height=760");
     if (!popupRef.current) setAuthError("Allow popups for this Deploy Commander site, then try again.");
   };
 
@@ -312,38 +313,29 @@ export function App({ bridge, api, backendOrigin, installDefaults }: AppProps) {
     finally { setBusyAction(""); }
   };
 
-  const install = async (input: InstallInput) => {
-    const started = await startInstallRun(caller, input);
-    void loadRunState();
-    if (started.status === 0) setPageError("");
-  };
-
   const teardown = async () => {
     if (!window.confirm("Tear down the Cloudflare Manager service? Application tokens and Deploy Commander bucket records will be removed. Cloudflare buckets and domains will remain.")) return;
     await runAction("teardown", async () => {
       await startTeardown(caller, api);
-      await loadRunState();
+      await refreshTeardown();
     });
   };
 
   if (auth === "checking") return <main className="app-shell"><div className="loading-card">Loading Cloudflare Manager…</div></main>;
-  const showInstall = !installed;
-
   return <main className="app-shell">
     <header className="topbar">
       <a className="brand" href="#"><span className="brand-mark">C</span><span>Cloudflare Manager<small>Deploy Commander</small></span></a>
-      {installed && <div className="topbar-actions"><span className={`status-pill ${auth === "signed-in" ? "status-live" : "status-neutral"}`}>{auth === "signed-in" ? "Cloudflare connected" : "Cloudflare sign-in needed"}</span><button className="text-button text-danger" disabled={teardownActive || auth !== "signed-in"} onClick={teardown}>Tear down</button></div>}
+      <div className="topbar-actions"><span className={`status-pill ${auth === "signed-in" ? "status-live" : "status-neutral"}`}>{auth === "signed-in" ? "Cloudflare connected" : "Cloudflare sign-in needed"}</span><button className="text-button text-danger" disabled={teardownActive || auth !== "signed-in" || teardownHistory?.run.status === 2} onClick={teardown}>Tear down</button></div>
     </header>
 
     <section className="hero">
       <div className="hero-copy"><div className="eyebrow">OBJECT STORAGE · EDGE DELIVERY</div><h1>R2 storage, under control.</h1><p>Manage Cloudflare buckets, connect custom domains, and issue scoped credentials for the applications that use them.</p></div>
-      <div className="hero-stat"><span>YOUR ACCESS</span><strong>{installed ? auth === "signed-in" ? "Ready" : "Sign-in required" : "Setup"}</strong><small>OAuth stays with the signed-in user.</small></div>
+      <div className="hero-stat"><span>YOUR ACCESS</span><strong>{auth === "signed-in" ? "Ready" : "Sign-in required"}</strong><small>OAuth stays with the signed-in user.</small></div>
     </section>
 
-    {installed && installHistory && <RunSummary history={installHistory} />}
-    {installed && teardownHistory && <RunSummary history={teardownHistory} />}
+    {teardownHistory && <section className="run-summary" aria-label="teardown run status"><div><span className="muted-label">Latest teardown run</span><strong className={`run-status run-status-${teardownHistory.run.status}`}>{runStatus(teardownHistory.run.status)}</strong><span className="run-id">{teardownHistory.run.id}</span></div><div className="run-messages"><p>{teardownHistory.lastEvent?.message ?? "Run updates will appear here."}</p></div></section>}
 
-    {showInstall ? <InstallPanel defaults={installDefaults} history={installHistory} installed={false} active={installActive || teardownActive} onInstall={install} /> : auth !== "signed-in" ? <section className="panel auth-panel">
+    {auth !== "signed-in" ? <section className="panel auth-panel">
       <div className="panel-kicker">CLOUDFLARE AUTHORIZATION</div>
       <h2>{auth === "unavailable" ? "Manager service is unavailable" : "Connect your Cloudflare account"}</h2>
       <p>{auth === "unavailable" ? "The manager API did not respond. Check the configured same-site route and service health." : "Sign in to Cloudflare to see your accounts. Access is personal to your Cloudflare user and is not shared with application credentials."}</p>
@@ -391,6 +383,7 @@ export function App({ bridge, api, backendOrigin, installDefaults }: AppProps) {
 }
 
 function isActive(status?: number): boolean { return status === 0 || status === 1; }
+function runStatus(status: number): string { return ["Queued", "Running", "Done", "Failed"][status] ?? "Unknown"; }
 function statusOf(error: unknown): number | undefined { return isRecord(error) && typeof error.status === "number" ? error.status : undefined; }
 function message(error: unknown): string { return error instanceof Error ? error.message : "The request could not be completed"; }
 function isRecord(value: unknown): value is Record<string, any> { return typeof value === "object" && value !== null && !Array.isArray(value); }
