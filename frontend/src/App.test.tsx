@@ -131,4 +131,35 @@ describe("Cloudflare Manager interface", () => {
     expect(screen.queryByText("Old event")).toBeNull();
     expect(caller.getRunEvents).toHaveBeenCalledWith({ run_id: "teardown-1", limit: 1, order: "desc" });
   });
+
+  it("does not let an older teardown refresh replace a newer run", async () => {
+    const firstRefresh = deferred<any>();
+    const secondRefresh = deferred<any>();
+    const oldRun = { id: "teardown-old", action: "teardown", status: 2, created_at: "", queued_at: "2026-10-16T10:00:00Z", updated_at: "" };
+    const newRun = { id: "teardown-new", action: "teardown", status: 1, created_at: "", queued_at: "2026-10-16T11:00:00Z", updated_at: "" };
+    const { api, bridge, caller, handlers } = setup({}, {
+      getLatestRun: vi.fn().mockResolvedValueOnce(oldRun),
+      getRunEvents: vi.fn().mockImplementation(async ({ run_id }: { run_id: string }) => ({ events: [{ seq: 1, message: `Event for ${run_id}` }], limit: 1, offset: 0, total: 1 })),
+    });
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
+    expect(await screen.findByText("Event for teardown-old")).toBeTruthy();
+    vi.mocked(caller.getLatestRun).mockImplementation(async ({ action }: { action?: string } = {}) => {
+      if (action !== "teardown") return null;
+      return firstRefresh.promise;
+    });
+    handlers.forEach((handler) => handler({ type: "event", eventType: "run-start", data: { id: "teardown-new", manager: "manager-1", action: "teardown" } }));
+    vi.mocked(caller.getLatestRun).mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown" ? secondRefresh.promise : null);
+    handlers.forEach((handler) => handler({ type: "event", eventType: "run-update", data: { type: "log", payload: { run_id: "teardown-new", seq: 1, message: "progress" } } }));
+    secondRefresh.resolve(newRun);
+    expect(await screen.findByText("Event for teardown-new")).toBeTruthy();
+    firstRefresh.resolve(oldRun);
+    await waitFor(() => expect(screen.getByLabelText("teardown run status").textContent).toContain("teardown-new"));
+    expect(screen.queryByText("Event for teardown-old")).toBeNull();
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}

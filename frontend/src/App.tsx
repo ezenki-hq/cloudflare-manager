@@ -19,6 +19,7 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
   const { caller } = bridge;
   const popupRef = useRef<Window | null>(null);
   const bucketListRef = useRef<Bucket[]>([]);
+  const teardownRefreshVersion = useRef(0);
   const [auth, setAuth] = useState<AuthState>("checking");
   const [authError, setAuthError] = useState("");
   const [teardownHistory, setTeardownHistory] = useState<TeardownSnapshot | null>(null);
@@ -56,8 +57,10 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
   } : null, [selectedBucket, accountId, jurisdiction]);
 
   const refreshTeardown = useCallback(async () => {
+    const version = ++teardownRefreshVersion.current;
     try {
       const snapshot = await loadLatestTeardown(caller);
+      if (version !== teardownRefreshVersion.current) return null;
       setTeardownHistory((current) => {
         if (!snapshot) return current?.run.status === 0 || current?.run.status === 1 ? current : null;
         if (current?.run.id === snapshot.run.id && current.lastEvent && (!snapshot.lastEvent || current.lastEvent.seq > snapshot.lastEvent.seq)) {
@@ -110,7 +113,10 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
     return () => { live = false; };
   }, [api, refreshTeardown]);
 
-  useEffect(() => () => bridge.wire.end(), [bridge]);
+  useEffect(() => () => {
+    teardownRefreshVersion.current += 1;
+    bridge.wire.end();
+  }, [bridge]);
 
   useEffect(() => bridge.onEvent((event) => {
     if (event.eventType === "run-start" && event.data.action === "teardown") {
