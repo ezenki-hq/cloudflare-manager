@@ -1,0 +1,6 @@
+{
+  "name": "Cloudflare Manager",
+  "kind": "cloudflare",
+  "description": "Install and manage Cloudflare R2 through Deploy Commander.",
+  "buildDirectory": "dist"
+}
