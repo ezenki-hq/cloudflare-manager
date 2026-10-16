@@ -16,11 +16,14 @@ const install: RunItem = { id: "install-1", action: "install", status: 1, queued
 
 afterEach(cleanup);
 
-function setup(options: { initialRun?: RunItem | null; event?: { seq: number; message: string } | null; startError?: Error } = {}) {
+function setup(options: { initialRun?: RunItem | null; event?: { seq: number; message: string } | null; startError?: Error; historyError?: Error } = {}) {
   let currentRun = options.initialRun === undefined ? install : options.initialRun;
   let currentEvent = options.event === undefined ? { seq: 5, message: "Install runner started" } : options.event;
   const caller = {
-    getLatestRun: vi.fn().mockImplementation(async ({ action }: { action: string }) => action === "install" ? currentRun : null),
+    getLatestRun: vi.fn().mockImplementation(async ({ action }: { action: string }) => {
+      if (action === "install" && options.historyError) throw options.historyError;
+      return action === "install" ? currentRun : null;
+    }),
     getRunEvents: vi.fn().mockImplementation(async () => ({ events: currentEvent ? [{ ...currentEvent, phase: "deploy", at: "" }] : [], limit: 1, offset: 0, total: currentEvent ? 1 : 0 })),
     getManager: vi.fn().mockResolvedValue("manager-1"),
     start: vi.fn().mockImplementation(async () => {
@@ -90,6 +93,14 @@ describe("installer interface", () => {
     fireEvent.click(button);
     expect((await screen.findByRole("alert")).textContent).toContain("Commander unavailable");
     expect((button as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("keeps installation disabled when initial run history is unavailable", async () => {
+    const { bridge } = setup({ historyError: new Error("Commander run history unavailable") });
+    render(<InstallApp bridge={bridge} defaults={defaults} />);
+    expect((await screen.findByRole("alert")).textContent).toContain("Commander run history unavailable");
+    expect(screen.getByText("Status unavailable", { selector: "span" })).toBeTruthy();
+    expect((screen.getByRole("button") as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("keeps install disabled until Commander reports the new run", async () => {

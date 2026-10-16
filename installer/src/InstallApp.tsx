@@ -9,10 +9,12 @@ interface InstallAppProps {
   defaults: InstallInput;
 }
 
+type InstallerUIState = InstallationState | "unavailable";
+
 export function InstallApp({ bridge, defaults }: InstallAppProps) {
   const { caller } = bridge;
   const [values, setValues] = useState(defaults);
-  const [state, setState] = useState<InstallationState>("ready");
+  const [state, setState] = useState<InstallerUIState>("ready");
   const [installRun, setInstallRun] = useState<RunItem | null>(null);
   const [lastEvent, setLastEvent] = useState<{ seq: number; message: string } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -52,7 +54,7 @@ export function InstallApp({ bridge, defaults }: InstallAppProps) {
 
   useEffect(() => {
     let alive = true;
-    void refresh().catch((cause) => { if (alive) setError(message(cause)); }).finally(() => { if (alive) setLoading(false); });
+    void refresh().catch((cause) => { if (alive) { setError(message(cause)); setState("unavailable"); } }).finally(() => { if (alive) setLoading(false); });
     const unsubscribe = bridge.onEvent((event) => {
       if (event.eventType === "run-start" && event.data.action === "install") {
         const queuedAt = event.data.created ?? new Date().toISOString();
@@ -120,8 +122,8 @@ function applyLiveEvent(event: { run_id: string; seq?: number; message?: string 
   setEvent({ seq: event.seq, message: event.message });
 }
 
-function stateLabel(state: InstallationState): string {
-  return ({ ready: "Not installed", installing: "Install run active", installed: "Installed", "tearing-down": "Teardown active" })[state];
+function stateLabel(state: InstallerUIState): string {
+  return ({ ready: "Not installed", installing: "Install run active", installed: "Installed", "tearing-down": "Teardown active", unavailable: "Status unavailable" })[state];
 }
 
 function statusLabel(status: number): string {
