@@ -2077,29 +2077,108 @@ Do not supply or attempt to override trusted current-manager identity in scoped 
 
 Deploy Commander owns manager context and remains the final authorization boundary.
 
-### General rule
+#### Deploy Commander — General Manager Creation Rules
+
+1. Prefer Native Platform Capabilities
 
 Prefer Deploy Commander’s native resources, connections, runs, history, labels, and lifecycle tooling before introducing additional persistence or custom infrastructure.
 
-Add manager-specific database state only when the existing platform primitives do not represent the requirement cleanly. If you are using the database ensure you check to see if the database is initialized and if not initialize it.
+Keep managers as simple as possible and reuse existing platform functionality.
 
-Use the `createWire` event callback for live run updates. Register and remove listeners with the active view. Use run history for initial state and missed events; do not poll for live events.
+2. Database Usage
 
-Describe a specific outcome such as “teardown complete” only when the durable run identifies the intended action and the verified runner contract makes that outcome part of a successful run.
+Add manager-specific database state only when the existing platform primitives do not represent the requirement cleanly.
 
-Never require a manager frontend to perform an operation immediately after a run completes. Assume the manager interface is no longer open when the run finishes. Any required post-run work must be part of the durable run/backend workflow or be safely recoverable when the manager is opened again.
+If using the database, always check whether it has been initialized and initialize it if necessary.
 
-Do not allow conflicting runs while a relevant run is queued or running.
-When a run that affects an action is queued or running, disable the UI and other manager mechanisms that could start that action again. Do not assume the current browser initiated the run; it may have been started by another browser, manager instance, or backend process.
-Check existing run state when the manager loads, listen for run-start events to detect newly started runs, and re-enable the action only after the relevant run reaches a terminal state.
+3. Default Manager Scope
 
-A manager frontend may request teardown and observe its status, but must not chain teardown steps in browser callbacks. The backend must continue or resume the workflow if the user navigates away or closes the tab. Runner jobs must clear the redirect before full teardown removes the service.
+Managers primarily designed to install resources (such as NATS, PostgreSQL, or Redis) must default to managing only the resource's **deployment and connections**.
+
+Do not implement additional functionality such as direct resource administration, inspection, monitoring, or user/account management unless explicitly requested by the developer.
+
+Additional management functionality must not be introduced simply because the installed resource supports it.
+
+4. Runs Are for State Changes Only
+
+Runs must only be used for installations, configuration changes, teardown, and other state-altering operations.
+
+**Never use runs to inspect resources, retrieve data, or perform read-only operations.** This includes triggering inspection runs when a manager loads.
+
+Reading existing run status and history is permitted; creating a new run solely to retrieve information is not.
+
+If explicitly authorized functionality requires retrieving data directly from an installed resource, the manager must be full-stack and use its backend for that access.
+
+Never use runs as a substitute for a backend.
+
+5. Frontend-First Architecture
 
 Managers should be frontend-only whenever possible, using existing Deploy Commander APIs and capabilities instead of introducing a dedicated backend.
+
 If a backend is necessary, explain to the developer why it is required and why a frontend-only approach is insufficient.
+
+Do not expand a manager's functionality or introduce a backend without developer authorization.
+
+6. Backend Implementation
+
 Manager backends must be implemented in Go unless the developer explicitly specifies another language.
-Do not introduce a backend unnecessarily. The image base should be gcr.io/distroless/static-debian12:nonroot as we would want to make the backend image as small and simple as possible.
 
-Always use ezenki/deploy-commander-runner for deployment operations. Never create a custom runner unless explicitly instructed by the developer. If the runner's integration guide is missing or the runner appears to lack required functionality, inform the developer before proceeding.
+Use `gcr.io/distroless/static-debian12:nonroot` as the backend image base to keep the image small and simple.
 
-Use Tailwind CSS to create a clean, polished, modern, and responsive manager interface unless explicitly instructed otherwise. Maintain consistent styling and a user-friendly experience throughout the manager.
+Keep the Dockerfile minimal.
+
+When implementing a full-stack manager, keep the initial installer frontend separate from the actual manager frontend.
+
+7. Standard Deployment Runner
+
+Always use `ezenki/deploy-commander-runner` for deployment operations.
+
+Never create a custom runner unless explicitly instructed by the developer.
+
+If the runner's integration guide is missing or the runner appears to lack required functionality, inform the developer before proceeding.
+
+8. Live Run Events
+
+Use the `createWire` event callback for live run updates.
+
+Register and remove listeners with the active view.
+
+Use run history for initial state and missed events. Do not poll for live events.
+
+9. Run Outcome Verification
+
+Describe a specific outcome, such as "teardown complete," only when the durable run identifies the intended action and the verified runner contract makes that outcome part of a successful run.
+
+Do not infer specific outcomes solely from a generic successful run status.
+
+10. Durable Post-Run Operations
+
+Never require a manager frontend to perform an operation immediately after a run completes.
+
+Assume the manager interface is no longer open when the run finishes.
+
+Any required post-run work must be part of the durable run/backend workflow or be safely recoverable when the manager is opened again.
+
+11. Prevent Conflicting Runs
+
+Do not allow conflicting runs while a relevant run is queued or running.
+
+When a run that affects an action is queued or running, disable the UI and other manager mechanisms that could start that action again.
+
+Do not assume the current browser initiated the run. It may have been started by another browser, manager instance, or backend process.
+
+Check existing run state when the manager loads, listen for run-start events to detect newly started runs, and re-enable the action only after the relevant run reaches a terminal state.
+
+12. Teardown Workflows
+
+A manager frontend may request teardown and observe its status, but must not chain teardown steps in browser callbacks.
+
+The backend must continue or resume the workflow if the user navigates away or closes the tab.
+
+Runner jobs must clear the redirect before full teardown removes the service.
+
+13. UI Design
+
+Use Tailwind CSS to create a clean, polished, modern, and responsive manager interface unless explicitly instructed otherwise.
+
+Maintain consistent styling and a user-friendly experience throughout the manager.
