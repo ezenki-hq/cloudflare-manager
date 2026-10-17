@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/auth"
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/cloudflare"
+	managerjwt "github.com/ezenki-hq/cloudflare-manager/backend/internal/jwt"
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/server"
 )
 
@@ -24,15 +26,30 @@ const (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		if err := healthcheck(os.Getenv("PORT")); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
-	if err := serve(); err != nil {
+	if err := runCommand(os.Args[1:], os.Stdout); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func runCommand(args []string, stdout io.Writer) error {
+	if len(args) > 0 && args[0] == "generate-jwt-secret" {
+		if len(args) != 1 {
+			return fmt.Errorf("generate-jwt-secret takes no arguments")
+		}
+		secret, err := managerjwt.GenerateSecret()
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(stdout, secret)
+		return err
+	}
+	if len(args) > 0 && args[0] == "healthcheck" {
+		if len(args) != 1 {
+			return fmt.Errorf("healthcheck takes no arguments")
+		}
+		return healthcheck(os.Getenv("PORT"))
+	}
+	return serve()
 }
 
 func serve() error {
