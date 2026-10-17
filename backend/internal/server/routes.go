@@ -5,22 +5,32 @@ import (
 	"net/http"
 
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/auth"
+	"github.com/ezenki-hq/cloudflare-manager/backend/internal/commander"
+	managerpkg "github.com/ezenki-hq/cloudflare-manager/backend/internal/manager"
 )
 
 type routeData struct {
-	AccountID    string `json:"account_id"`
-	Jurisdiction string `json:"jurisdiction"`
-	Cursor       string `json:"cursor"`
-	Bucket       string `json:"bucket"`
-	Domain       string `json:"domain"`
-	ZoneID       string `json:"zone_id"`
-	Name         string `json:"name"`
-	ConnectionID string `json:"connection_id"`
-	Permission   string `json:"permission"`
-	TokenID      string `json:"token_id"`
-	ClientID     string `json:"client_id"`
-	OpenerOrigin string `json:"opener_origin"`
-	APIOrigin    string `json:"api_origin"`
+	AccountID     string            `json:"account_id"`
+	Jurisdiction  string            `json:"jurisdiction"`
+	Cursor        string            `json:"cursor"`
+	Bucket        string            `json:"bucket"`
+	Domain        string            `json:"domain"`
+	ZoneID        string            `json:"zone_id"`
+	Name          string            `json:"name"`
+	ConnectionID  string            `json:"connection_id"`
+	Permission    string            `json:"permission"`
+	TokenID       string            `json:"token_id"`
+	ClientID      string            `json:"client_id"`
+	OpenerOrigin  string            `json:"opener_origin"`
+	APIOrigin     string            `json:"api_origin"`
+	ResourceID    string            `json:"resource_id"`
+	S3Endpoint    string            `json:"s3_endpoint"`
+	PrimaryDomain string            `json:"primary_domain"`
+	ManagerID     string            `json:"manager_id"`
+	GroupID       string            `json:"group_id"`
+	Labels        map[string]string `json:"labels"`
+	Connections   []string          `json:"connections"`
+	Group         string            `json:"group"`
 }
 
 func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMessage) error {
@@ -133,10 +143,152 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 		if err != nil {
 			return err
 		}
-		if e := s.cf.DeleteBucket(r.Context(), t, d.AccountID, d.Jurisdiction, d.Bucket); e != nil {
+		if s.manager != nil {
+			if e := s.manager.DeleteBucket(r.Context(), t, d.AccountID, d.Jurisdiction, d.Bucket); e != nil {
+				return s.upstreamError(w, e)
+			}
+		} else if e := s.cf.DeleteBucket(r.Context(), t, d.AccountID, d.Jurisdiction, d.Bucket); e != nil {
 			return s.upstreamError(w, e)
 		}
 		w.WriteHeader(http.StatusNoContent)
+		return nil
+	case "/api/resources/find":
+		if s.manager == nil {
+			return fail(503, "commander_unavailable", "Commander is unavailable")
+		}
+		if !validID(d.AccountID) || !validBucketName(d.Bucket) || !validJurisdiction(d.Jurisdiction) {
+			return fail(400, "invalid_resource", "Invalid R2 resource lookup")
+		}
+		resource, e := s.manager.FindResource(r.Context(), d.AccountID, d.Jurisdiction, d.Bucket)
+		if e != nil {
+			return fail(502, "commander_error", e.Error())
+		}
+		writeJSON(w, http.StatusOK, resource)
+		return nil
+	case "/api/resources/register":
+		if s.manager == nil {
+			return fail(503, "commander_unavailable", "Commander is unavailable")
+		}
+		if !validID(d.AccountID) || !validBucketName(d.Bucket) || !validJurisdiction(d.Jurisdiction) {
+			return fail(400, "invalid_resource", "Invalid R2 resource")
+		}
+		id, e := s.manager.RegisterResource(r.Context(), managerpkg.ResourceInput{AccountID: d.AccountID, Jurisdiction: d.Jurisdiction, Bucket: d.Bucket, Endpoint: d.S3Endpoint, PrimaryDomain: d.PrimaryDomain})
+		if e != nil {
+			return fail(502, "commander_error", e.Error())
+		}
+		writeJSON(w, http.StatusCreated, map[string]string{"resource_id": id})
+		return nil
+	case "/api/connections/list":
+		if s.manager == nil {
+			return fail(503, "commander_unavailable", "Commander is unavailable")
+		}
+		items, e := s.manager.ListConnections(r.Context(), d.ResourceID)
+		if e != nil {
+			return fail(502, "commander_error", e.Error())
+		}
+		safe := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			safe = append(safe, safeConnection(item))
+		}
+		writeJSON(w, http.StatusOK, safe)
+		return nil
+	case "/api/connections/provision":
+		if s.manager == nil {
+			return fail(503, "commander_unavailable", "Commander is unavailable")
+		}
+		token, e := s.cloudflareToken(w, r)
+		if e != nil {
+			return e
+		}
+		groupID := ""
+		if len(d.Labels) > 0 {
+			if d.Labels[managerpkg.OriginLabel] != managerpkg.OriginCreated || len(d.Labels) != 2 {
+				return fail(400, "invalid_labels", "Invalid created connection labels")
+			}
+			groupID = d.Labels[managerpkg.GroupLabel]
+		}
+		result, e := s.manager.Provision(r.Context(), token, managerpkg.ProvisionInput{ResourceID: d.ResourceID, ManagerID: d.ManagerID, Permission: d.Permission, GroupID: groupID})
+		if e != nil {
+			return fail(502, "provision_failed", e.Error())
+		}
+		writeJSON(w, http.StatusOK, result)
+		return nil
+	case "/api/connections/confirm":
+		if s.manager == nil {
+			return fail(503, "commander_unavailable", "Commander is unavailable")
+		}
+		item, e := s.manager.Confirm(r.Context(), d.ConnectionID)
+		if e != nil {
+			return fail(502, "confirm_failed", e.Error())
+		}
+		writeJSON(w, http.StatusOK, safeConnection(item))
+		return nil
+	case "/api/connections/abort", "/api/connections/revoke":
+		if s.manager == nil {
+			return fail(503, "commander_unavailable", "Commander is unavailable")
+		}
+		token, e := s.cloudflareToken(w, r)
+		if e != nil {
+			return e
+		}
+		var cleanup error
+		if r.URL.Path == "/api/connections/abort" {
+			cleanup = s.manager.Abort(r.Context(), token, d.ConnectionID)
+		} else {
+			cleanup = s.manager.Revoke(r.Context(), token, d.ConnectionID)
+		}
+		if cleanup != nil {
+			return fail(502, "cleanup_failed", cleanup.Error())
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	case "/api/connections/link":
+		if s.manager == nil {
+			return fail(503, "commander_unavailable", "Commander is unavailable")
+		}
+		item, e := s.manager.Link(r.Context(), d.ResourceID, d.ConnectionID, d.Labels)
+		if e != nil {
+			return fail(400, "link_failed", e.Error())
+		}
+		writeJSON(w, http.StatusOK, safeConnection(item))
+		return nil
+	case "/api/connections/unlink":
+		if s.manager == nil {
+			return fail(503, "commander_unavailable", "Commander is unavailable")
+		}
+		item, e := s.manager.Unlink(r.Context(), d.ResourceID, d.ConnectionID, d.Group)
+		if e != nil {
+			return fail(400, "unlink_failed", e.Error())
+		}
+		writeJSON(w, http.StatusOK, safeConnection(item))
+		return nil
+	case "/api/connections/delete-group":
+		if s.manager == nil {
+			return fail(503, "commander_unavailable", "Commander is unavailable")
+		}
+		token, e := s.cloudflareToken(w, r)
+		if e != nil {
+			return e
+		}
+		deleted, e := s.manager.DeleteGroup(r.Context(), token, d.Connections)
+		if e != nil {
+			return fail(502, "delete_failed", e.Error())
+		}
+		writeJSON(w, http.StatusOK, map[string][]string{"deleted": deleted})
+		return nil
+	case "/api/teardown/prepare":
+		if s.manager == nil {
+			return fail(503, "commander_unavailable", "Commander is unavailable")
+		}
+		token, e := s.cloudflareToken(w, r)
+		if e != nil {
+			return e
+		}
+		ids, e := s.manager.PrepareTeardown(r.Context(), token)
+		if e != nil {
+			return fail(502, "teardown_failed", e.Error())
+		}
+		writeJSON(w, http.StatusOK, map[string][]string{"resource_ids": ids})
 		return nil
 	case "/api/domains/list":
 		if !validBucketInput(d) {
@@ -222,6 +374,17 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 	default:
 		return fail(http.StatusNotFound, "not_found", "API route not found")
 	}
+}
+
+func safeConnection(d commander.ConnectionDetail) map[string]any {
+	m := d.Config.Metadata
+	metadata := map[string]any{}
+	for _, key := range []string{"status", "permission", "accountId", "bucket", "jurisdiction", "endpoint", "secret_keys"} {
+		if value, ok := m[key]; ok {
+			metadata[key] = value
+		}
+	}
+	return map[string]any{"connection": map[string]any{"id": d.Connection.ID, "resource": d.Connection.Resource, "labels": d.Connection.Labels, "metadata": metadata}}
 }
 
 func validBucketInput(d routeData) bool {

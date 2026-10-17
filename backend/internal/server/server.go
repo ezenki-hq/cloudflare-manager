@@ -17,6 +17,7 @@ import (
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/cloudflare"
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/commander"
 	managerjwt "github.com/ezenki-hq/cloudflare-manager/backend/internal/jwt"
+	managerpkg "github.com/ezenki-hq/cloudflare-manager/backend/internal/manager"
 )
 
 const maxJSONBody = 32 << 10
@@ -31,10 +32,14 @@ type Server struct {
 	oauth     *auth.Handler
 	cf        *cloudflare.Client
 	commander *commander.Client
+	manager   *managerpkg.Service
 }
 
 func NewHandler(cfg Config, oauth *auth.Handler, cf *cloudflare.Client, commanderClient *commander.Client) http.Handler {
 	s := &Server{cfg: cfg, oauth: oauth, cf: cf, commander: commanderClient}
+	if commanderClient != nil {
+		s.manager = managerpkg.NewService(cfg.ManagerID, commanderClient, cf)
+	}
 	mux := http.NewServeMux()
 	if oauth != nil {
 		oauth.Register(mux)
