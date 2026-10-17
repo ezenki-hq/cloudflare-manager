@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/auth"
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/cloudflare"
+	"github.com/ezenki-hq/cloudflare-manager/backend/internal/commander"
 	managerjwt "github.com/ezenki-hq/cloudflare-manager/backend/internal/jwt"
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/server"
 )
@@ -53,21 +57,36 @@ func runCommand(args []string, stdout io.Writer) error {
 }
 
 func serve() error {
-	clientID := strings.TrimSpace(os.Getenv("CF_CLIENT_ID"))
-	publicOrigin := strings.TrimRight(strings.TrimSpace(os.Getenv("PUBLIC_ORIGIN")), "/")
-	commanderOrigin := strings.TrimRight(strings.TrimSpace(os.Getenv("COMMANDER_ORIGIN")), "/")
-	if clientID == "" || publicOrigin == "" || commanderOrigin == "" {
-		return fmt.Errorf("CF_CLIENT_ID, PUBLIC_ORIGIN, and COMMANDER_ORIGIN are required")
+	managerID := strings.TrimSpace(os.Getenv("MANAGER_ID"))
+	managerAPI := strings.TrimRight(strings.TrimSpace(os.Getenv("MANAGER_API")), "/")
+	managerPassword := os.Getenv("MANAGER_PASSWORD")
+	encodedSecret := strings.TrimSpace(os.Getenv("JWT_SECRET"))
+	if managerID == "" || managerAPI == "" || managerPassword == "" || encodedSecret == "" {
+		return fmt.Errorf("MANAGER_ID, MANAGER_API, MANAGER_PASSWORD, and JWT_SECRET are required")
 	}
-	oauth, err := auth.NewHandler(auth.Config{
-		ClientID: clientID, PublicOrigin: publicOrigin, CommanderOrigin: commanderOrigin,
-		AuthorizationURL: defaultAuthorizationURL, TokenURL: defaultTokenURL,
-	}, &http.Client{Timeout: 12 * time.Second}, time.Now)
+	jwtSecret, err := base64.RawURLEncoding.DecodeString(encodedSecret)
+	if err != nil || len(jwtSecret) != 32 {
+		return fmt.Errorf("JWT_SECRET must be an unpadded base64url value containing 32 bytes")
+	}
+	commanderClient, err := commander.NewClient(managerAPI, managerID, managerPassword, &http.Client{Timeout: 12 * time.Second})
+	if err != nil {
+		return fmt.Errorf("configure Commander: %w", err)
+	}
+	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 12*time.Second)
+	err = commanderClient.VerifyManager(verifyCtx)
+	verifyCancel()
+	if err != nil {
+		return fmt.Errorf("verify Commander manager: %w", err)
+	}
+	stateMAC := hmac.New(sha256.New, jwtSecret)
+	_, _ = stateMAC.Write([]byte("cloudflare-manager/oauth-state/v1"))
+	stateKey := stateMAC.Sum(nil)
+	oauth, err := auth.NewHandler(auth.Config{AuthorizationURL: defaultAuthorizationURL, TokenURL: defaultTokenURL, StateKey: stateKey}, &http.Client{Timeout: 12 * time.Second}, time.Now)
 	if err != nil {
 		return fmt.Errorf("configure OAuth: %w", err)
 	}
 	api := cloudflare.NewClient("https://api.cloudflare.com", &http.Client{Timeout: 20 * time.Second})
-	handler := server.NewHandler(server.Config{PublicOrigin: publicOrigin, CommanderOrigin: commanderOrigin, StaticDir: os.Getenv("STATIC_DIR")}, oauth, api)
+	handler := server.NewHandler(server.Config{ManagerID: managerID, JWTSecret: jwtSecret, StaticDir: os.Getenv("STATIC_DIR")}, oauth, api, commanderClient)
 	port := strings.TrimSpace(os.Getenv("PORT"))
 	if port == "" {
 		port = defaultPort

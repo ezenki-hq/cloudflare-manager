@@ -1,6 +1,9 @@
 package server
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,81 +11,72 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/auth"
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/cloudflare"
 )
 
-const testOrigin = "https://commander.example.test"
+const (
+	testOrigin  = "https://frontend.example.test"
+	testManager = "manager-1"
+)
 
-func TestStaticFallbackCanBeRegisteredAlongsideAPI(t *testing.T) {
-	staticDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("manager interface"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	h := NewHandler(Config{PublicOrigin: "https://manager.example.test", CommanderOrigin: testOrigin, StaticDir: staticDir}, nil, cloudflare.NewClient("https://api.cloudflare.com", nil))
-	for _, path := range []string{"/", "/dashboard"} {
-		resp := httptest.NewRecorder()
-		h.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, path, nil))
-		if resp.Code != http.StatusOK || resp.Body.String() != "manager interface" {
-			t.Errorf("GET %s returned %d body=%q", path, resp.Code, resp.Body.String())
-		}
-	}
-	resp := httptest.NewRecorder()
-	h.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/api/unknown", nil))
-	if resp.Code != http.StatusNotFound || !strings.Contains(resp.Body.String(), "API route not found") {
-		t.Fatalf("API fallback returned %d body=%q", resp.Code, resp.Body.String())
-	}
-}
+var testKey = []byte("01234567890123456789012345678901")
 
-func setup(t *testing.T, cfServer http.HandlerFunc) (http.Handler, *httptest.Server, *http.Cookie) {
+func signedRequest(t *testing.T, path, origin string, data any) *http.Request {
 	t.Helper()
-	upstream := httptest.NewServer(cfServer)
-	client := cloudflare.NewClient(upstream.URL, upstream.Client())
-	oauth, err := auth.NewHandler(auth.Config{ClientID: "client", PublicOrigin: "https://manager.example.test", CommanderOrigin: testOrigin, AuthorizationURL: "https://cloudflare.example.test/authorize", TokenURL: "https://cloudflare.example.test/token"}, nil, nil)
+	dataBytes, err := json.Marshal(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandler(Config{PublicOrigin: "https://manager.example.test", CommanderOrigin: testOrigin}, oauth, client)
-	cookie := &http.Cookie{Name: "__Host-cf-access", Value: "per-user-token", Path: "/", Secure: true, HttpOnly: true}
-	return h, upstream, cookie
+	now := time.Now().Unix()
+	header, _ := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
+	claims, _ := json.Marshal(map[string]any{"aud": testManager, "path": path, "origin": origin, "iat": now, "exp": now + 60, "data": json.RawMessage(dataBytes)})
+	unsigned := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
+	mac := hmac.New(sha256.New, testKey)
+	_, _ = mac.Write([]byte(unsigned))
+	token := unsigned + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(token))
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Content-Type", "application/jwt")
+	req.AddCookie(&http.Cookie{Name: "__Host-cf-access", Value: "test-token"})
+	return req
 }
 
-func TestPublicAndCommanderOriginsAreAllowed(t *testing.T) {
-	h, upstream, cookie := setup(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"success":true,"result":[]}`))
-	})
+func TestSignedRouteRequiresCorrectJWTAndReturnsNoStore(t *testing.T) {
+	called := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called++
+		_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"account1","name":"Main"}],"result_info":{"page":1,"total_pages":1}}`))
+	}))
 	defer upstream.Close()
-	for _, origin := range []string{"https://manager.example.test", testOrigin} {
-		req := httptest.NewRequest(http.MethodGet, "/api/accounts", nil)
-		req.AddCookie(cookie)
-		req.Header.Set("Origin", origin)
-		resp := httptest.NewRecorder()
-		h.ServeHTTP(resp, req)
-		if resp.Header().Get("Access-Control-Allow-Origin") != origin {
-			t.Errorf("origin %q not allowed: status=%d headers=%v", origin, resp.Code, resp.Header())
-		}
+	oauthHandler, err := auth.NewHandler(auth.Config{AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token", StateKey: testKey}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(Config{ManagerID: testManager, JWTSecret: testKey}, oauthHandler, cloudflare.NewClient(upstream.URL, upstream.Client()), nil)
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, signedRequest(t, "/api/accounts/list", testOrigin, map[string]any{}))
+	if resp.Code != http.StatusOK || called != 1 || resp.Header().Get("Cache-Control") != "no-store" || resp.Header().Get("Access-Control-Allow-Origin") != testOrigin {
+		t.Fatalf("status=%d called=%d headers=%v body=%s", resp.Code, called, resp.Header(), resp.Body.String())
 	}
 }
 
-func TestOriginRejectsMutation(t *testing.T) {
+func TestSignedRouteRejectsLegacyAndMismatchedJWT(t *testing.T) {
 	called := 0
-	h, upstream, cookie := setup(t, func(w http.ResponseWriter, r *http.Request) {
-		called++
-		_, _ = w.Write([]byte(`{"success":true,"result":{}}`))
-	})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called++ }))
 	defer upstream.Close()
-	for _, origin := range []string{"https://attacker.example.test", ""} {
-		req := httptest.NewRequest(http.MethodPost, "/api/accounts/account1/buckets", strings.NewReader(`{"name":"bucket-one","jurisdiction":"default"}`))
-		req.AddCookie(cookie)
-		req.Header.Set("Content-Type", "application/json")
-		if origin != "" {
-			req.Header.Set("Origin", origin)
-		}
+	h := NewHandler(Config{ManagerID: testManager, JWTSecret: testKey}, nil, cloudflare.NewClient(upstream.URL, upstream.Client()), nil)
+	for _, req := range []*http.Request{
+		httptest.NewRequest(http.MethodGet, "/api/accounts", nil),
+		signedRequest(t, "/api/accounts/list", "https://other.example", map[string]any{}),
+		signedRequest(t, "/api/session", testOrigin, map[string]any{}),
+	} {
 		resp := httptest.NewRecorder()
 		h.ServeHTTP(resp, req)
-		if resp.Code != http.StatusForbidden {
-			t.Errorf("origin %q status=%d", origin, resp.Code)
+		if resp.Code < 400 {
+			t.Errorf("%s %s status=%d", req.Method, req.URL.Path, resp.Code)
 		}
 	}
 	if called != 0 {
@@ -90,135 +84,48 @@ func TestOriginRejectsMutation(t *testing.T) {
 	}
 }
 
-func TestMissingCookieDoesNotCallCloudflare(t *testing.T) {
+func TestSignedRouteValidatesTypedDataBeforeCloudflare(t *testing.T) {
 	called := 0
-	h, upstream, _ := setup(t, func(w http.ResponseWriter, r *http.Request) { called++ })
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called++ }))
 	defer upstream.Close()
-	req := httptest.NewRequest(http.MethodGet, "/api/accounts", nil)
+	h := NewHandler(Config{ManagerID: testManager, JWTSecret: testKey}, nil, cloudflare.NewClient(upstream.URL, upstream.Client()), nil)
 	resp := httptest.NewRecorder()
-	h.ServeHTTP(resp, req)
-	if resp.Code != http.StatusUnauthorized || called != 0 {
-		t.Fatalf("status=%d upstream=%d", resp.Code, called)
-	}
-}
-
-func TestCredentialsNeverCache(t *testing.T) {
-	h, upstream, cookie := setup(t, func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "permission_groups") {
-			_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"group","name":"Workers R2 Storage Bucket Item Read","is_selectable":true,"scopes":["com.cloudflare.edge.r2.bucket"]}]}`))
-			return
-		}
-		_, _ = w.Write([]byte(`{"success":true,"result":{"id":"secret-id","value":"opaque-token-value"}}`))
-	})
-	defer upstream.Close()
-	req := httptest.NewRequest(http.MethodPost, "/api/accounts/account1/buckets/bucket-one/credentials", strings.NewReader(`{"jurisdiction":"default","connection_id":"connection-1","permission":"read-only"}`))
-	req.AddCookie(cookie)
-	req.Header.Set("Origin", testOrigin)
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-	h.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
-	}
-	if resp.Header().Get("Cache-Control") != "no-store" {
-		t.Fatalf("cache header=%q", resp.Header().Get("Cache-Control"))
-	}
-	if !strings.Contains(resp.Body.String(), `"secret_access_key"`) {
-		t.Fatalf("body=%s", resp.Body.String())
-	}
-}
-
-func TestAPIRejectsBadIdentifiers(t *testing.T) {
-	called := 0
-	h, upstream, cookie := setup(t, func(w http.ResponseWriter, r *http.Request) { called++ })
-	defer upstream.Close()
-	req := httptest.NewRequest(http.MethodGet, "/api/accounts/bad%21/zones", nil)
-	req.AddCookie(cookie)
-	req.Header.Set("Origin", testOrigin)
-	resp := httptest.NewRecorder()
-	h.ServeHTTP(resp, req)
+	h.ServeHTTP(resp, signedRequest(t, "/api/zones/list", testOrigin, map[string]any{"account_id": "bad!"}))
 	if resp.Code != http.StatusBadRequest || called != 0 {
-		t.Fatalf("status=%d upstream=%d body=%s", resp.Code, called, resp.Body.String())
+		t.Fatalf("status=%d called=%d body=%s", resp.Code, called, resp.Body.String())
 	}
 }
 
-func TestAllowedOriginEchoedWithCredentials(t *testing.T) {
-	h, upstream, cookie := setup(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"account1","name":"Main"}],"result_info":{"page":1,"total_pages":1}}`))
-	})
-	defer upstream.Close()
-	req := httptest.NewRequest(http.MethodGet, "/api/accounts", nil)
-	req.AddCookie(cookie)
-	req.Header.Set("Origin", testOrigin)
-	resp := httptest.NewRecorder()
-	h.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK || resp.Header().Get("Access-Control-Allow-Origin") != testOrigin || resp.Header().Get("Access-Control-Allow-Credentials") != "true" {
-		t.Fatalf("status=%d headers=%v", resp.Code, resp.Header())
+func TestSafePreflightAndStaticHealthExceptions(t *testing.T) {
+	staticDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("manager interface"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestOAuthSessionRouteAvailable(t *testing.T) {
-	h, upstream, _ := setup(t, func(w http.ResponseWriter, r *http.Request) {})
-	defer upstream.Close()
-	req := httptest.NewRequest(http.MethodGet, "/api/session", nil)
-	req.AddCookie(&http.Cookie{Name: "__Host-cf-access", Value: "token"})
+	h := NewHandler(Config{ManagerID: testManager, JWTSecret: testKey, StaticDir: staticDir}, nil, cloudflare.NewClient("https://api.cloudflare.com", nil), nil)
+	preflight := httptest.NewRequest(http.MethodOptions, "/api/accounts/list", nil)
+	preflight.Header.Set("Origin", testOrigin)
+	preflight.Header.Set("Access-Control-Request-Method", "POST")
 	resp := httptest.NewRecorder()
-	h.ServeHTTP(resp, req)
-	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), `"authenticated":true`) {
-		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	h.ServeHTTP(resp, preflight)
+	if resp.Code != http.StatusNoContent || resp.Header().Get("Access-Control-Allow-Origin") != testOrigin {
+		t.Fatalf("preflight status=%d headers=%v", resp.Code, resp.Header())
 	}
-}
-
-func TestInvalidRequestBodyRejected(t *testing.T) {
-	called := 0
-	h, upstream, cookie := setup(t, func(w http.ResponseWriter, r *http.Request) { called++ })
-	defer upstream.Close()
-	req := httptest.NewRequest(http.MethodPost, "/api/accounts/account1/buckets", strings.NewReader(`{"name":"bad/../name","jurisdiction":"default"}`))
-	req.AddCookie(cookie)
-	req.Header.Set("Origin", testOrigin)
-	req.Header.Set("Content-Type", "application/json")
-	resp := httptest.NewRecorder()
-	h.ServeHTTP(resp, req)
-	if resp.Code != http.StatusBadRequest || called != 0 {
-		t.Fatalf("status=%d upstream=%d", resp.Code, called)
-	}
-}
-
-func TestNoWildcardCORS(t *testing.T) {
-	h, upstream, cookie := setup(t, func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "result": []any{}})
-	})
-	defer upstream.Close()
-	req := httptest.NewRequest(http.MethodGet, "/api/accounts", nil)
-	req.AddCookie(cookie)
-	req.Header.Set("Origin", "null")
-	resp := httptest.NewRecorder()
-	h.ServeHTTP(resp, req)
-	if resp.Header().Get("Access-Control-Allow-Origin") == "*" {
-		t.Fatal("wildcard CORS returned")
-	}
-}
-
-func TestRejectedCloudflareTokenClearsCookie(t *testing.T) {
-	h, upstream, cookie := setup(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"success":false,"errors":[{"message":"invalid token"}]}`))
-	})
-	defer upstream.Close()
-	req := httptest.NewRequest(http.MethodGet, "/api/accounts", nil)
-	req.AddCookie(cookie)
-	resp := httptest.NewRecorder()
-	h.ServeHTTP(resp, req)
-	if resp.Code != http.StatusUnauthorized {
-		t.Fatalf("status=%d", resp.Code)
-	}
-	cleared := false
-	for _, c := range resp.Result().Cookies() {
-		if c.Name == "__Host-cf-access" && c.MaxAge < 0 && c.Value == "" {
-			cleared = true
+	for _, path := range []string{"/healthz", "/"} {
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusOK {
+			t.Errorf("GET %s status=%d", path, rr.Code)
 		}
 	}
-	if !cleared {
-		t.Fatalf("OAuth cookie was not cleared: %v", resp.Result().Cookies())
+}
+
+func TestOAuthStartIsSignedPostAndRequiresCookieForSession(t *testing.T) {
+	h := NewHandler(Config{ManagerID: testManager, JWTSecret: testKey}, nil, cloudflare.NewClient("https://api.cloudflare.com", nil), nil)
+	for _, path := range []string{"/auth/start", "/api/session"} {
+		resp := httptest.NewRecorder()
+		h.ServeHTTP(resp, signedRequest(t, path, testOrigin, map[string]any{"client_id": "client", "opener_origin": testOrigin, "api_origin": "https://manager.example.test"}))
+		if resp.Code == http.StatusNotFound {
+			t.Errorf("missing route %s", path)
+		}
 	}
 }

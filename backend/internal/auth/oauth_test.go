@@ -12,219 +12,112 @@ import (
 	"time"
 )
 
-func TestOAuthPKCEAndCookie(t *testing.T) {
-	var exchanged bool
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		exchanged = true
-		if err := r.ParseForm(); err != nil {
-			t.Fatal(err)
-		}
-		if r.Form.Get("code") != "test-code" || r.Form.Get("client_id") != "client-id" || r.Form.Get("grant_type") != "authorization_code" {
-			t.Errorf("unexpected token form: %v", r.Form)
-		}
-		if r.Form.Get("code_verifier") == "" {
-			t.Error("missing PKCE verifier")
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "opaque-access-token", "expires_in": 900, "refresh_token": "must-be-discarded"})
-	}))
-	defer tokenServer.Close()
+var testStateKey = []byte("state-signing-key-must-be-at-least-32-bytes")
 
+func oauthTestHandler(t *testing.T, tokenServer *httptest.Server, now func() time.Time) *Handler {
+	t.Helper()
+	h, e := NewHandler(Config{AuthorizationURL: "https://cloudflare.example/oauth/authorize", TokenURL: tokenServer.URL, StateKey: testStateKey}, tokenServer.Client(), now)
+	if e != nil {
+		t.Fatal(e)
+	}
+	return h
+}
+
+func TestOAuthStartAndCallbackUseSignedStateAndSavedClientID(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	h, err := NewHandler(Config{
-		ClientID: "client-id", PublicOrigin: "https://manager.example.test", CommanderOrigin: "https://commander.example.test",
-		AuthorizationURL: "https://cloudflare.example.test/oauth/authorize", TokenURL: tokenServer.URL,
-	}, tokenServer.Client(), func() time.Time { return now })
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux := http.NewServeMux()
-	h.Register(mux)
-
-	start := httptest.NewRecorder()
-	mux.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/auth/start?opener_origin=https%3A%2F%2Fcommander.example.test", nil))
-	if start.Code != http.StatusFound {
-		t.Fatalf("start status = %d", start.Code)
-	}
-	location, err := url.Parse(start.Header().Get("Location"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	q := location.Query()
-	if q.Get("response_type") != "code" || q.Get("client_id") != "client-id" || q.Get("code_challenge_method") != "S256" {
-		t.Fatalf("unexpected authorization query: %v", q)
-	}
-	if strings.Contains(q.Get("scope"), "offline_access") {
-		t.Fatal("authorization requested offline_access")
-	}
-	transient := start.Result().Cookies()
-	if len(transient) != 1 || !transient[0].HttpOnly || !transient[0].Secure || transient[0].SameSite != http.SameSiteLaxMode || transient[0].Path != "/" || transient[0].Domain != "" {
-		t.Fatalf("unsafe transient cookie: %#v", transient)
-	}
-	state := q.Get("state")
-	if state == "" {
-		t.Fatal("missing state")
-	}
-
-	// The challenge in the authorization request must be derived from the verifier
-	// retained in the protected transient cookie.
-	transientValue, err := decodeTransient(transient[0].Value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest := sha256.Sum256([]byte(transientValue.Verifier))
-	wantChallenge := base64.RawURLEncoding.EncodeToString(digest[:])
-	if q.Get("code_challenge") != wantChallenge || transientValue.State != state {
-		t.Fatalf("PKCE mismatch: challenge=%q state=%q", q.Get("code_challenge"), transientValue.State)
-	}
-
-	callback := httptest.NewRequest(http.MethodGet, "/auth/callback?code=test-code&state="+url.QueryEscape(state), nil)
-	callback.AddCookie(transient[0])
-	result := httptest.NewRecorder()
-	mux.ServeHTTP(result, callback)
-	if result.Code != http.StatusOK || !exchanged {
-		t.Fatalf("callback status=%d exchanged=%v body=%s", result.Code, exchanged, result.Body.String())
-	}
-	if !strings.Contains(result.Body.String(), "https://commander.example.test") || strings.Contains(result.Body.String(), "opaque-access-token") {
-		t.Fatal("callback did not notify only the configured origin")
-	}
-	cookies := result.Result().Cookies()
-	var access, cleared *http.Cookie
-	for _, cookie := range cookies {
-		switch cookie.Name {
-		case accessCookieName:
-			access = cookie
-		case stateCookieName:
-			cleared = cookie
-		}
-	}
-	if access == nil || access.Value != "opaque-access-token" || !access.Secure || !access.HttpOnly || access.SameSite != http.SameSiteLaxMode || access.Path != "/" || access.Domain != "" {
-		t.Fatalf("unsafe or missing access cookie: %#v", access)
-	}
-	wantExpiry := now.Add(900 * time.Second)
-	if access.MaxAge != 900 || !access.Expires.Equal(wantExpiry) {
-		t.Fatalf("cookie expiry mismatch: MaxAge=%d Expires=%s want=%s", access.MaxAge, access.Expires, wantExpiry)
-	}
-	if cleared == nil || cleared.MaxAge >= 0 || cleared.Value != "" {
-		t.Fatalf("transient cookie not cleared: %#v", cleared)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/session", nil)
-	req.AddCookie(access)
-	if token, ok := h.Token(req); !ok || token != "opaque-access-token" {
-		t.Fatalf("Token() = %q, %v", token, ok)
-	}
-}
-
-func TestOAuthRejectsStateMismatch(t *testing.T) {
-	exchanges := 0
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { exchanges++ }))
-	defer tokenServer.Close()
-	h, err := NewHandler(Config{ClientID: "id", PublicOrigin: "https://manager.example", CommanderOrigin: "https://commander.example", AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: tokenServer.URL}, tokenServer.Client(), time.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux := http.NewServeMux()
-	h.Register(mux)
-	start := httptest.NewRecorder()
-	mux.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/auth/start?opener_origin=https%3A%2F%2Fcommander.example", nil))
-	cookie := start.Result().Cookies()[0]
-	callback := httptest.NewRequest(http.MethodGet, "/auth/callback?code=bad&state=attacker", nil)
-	callback.AddCookie(cookie)
-	result := httptest.NewRecorder()
-	mux.ServeHTTP(result, callback)
-	for _, c := range result.Result().Cookies() {
-		if c.Name == accessCookieName && c.Value != "" {
-			t.Fatal("state mismatch set access cookie")
-		}
-	}
-	if exchanges != 0 || result.Code != http.StatusBadRequest {
-		t.Fatalf("state mismatch: exchanges=%d status=%d", exchanges, result.Code)
-	}
-}
-
-func TestSessionExpires(t *testing.T) {
-	h, err := NewHandler(Config{ClientID: "id", PublicOrigin: "https://manager.example", CommanderOrigin: "https://commander.example", AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token"}, http.DefaultClient, time.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux := http.NewServeMux()
-	h.Register(mux)
-	r := httptest.NewRecorder()
-	mux.ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/session", nil))
-	if r.Code != http.StatusUnauthorized {
-		t.Fatalf("session status = %d, want 401", r.Code)
-	}
-}
-
-func TestOAuthStartValidatesAndStoresOpenerOrigin(t *testing.T) {
-	h, err := NewHandler(Config{ClientID: "id", PublicOrigin: "https://manager.example", CommanderOrigin: "https://commander.example", AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token"}, http.DefaultClient, time.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux := http.NewServeMux()
-	h.Register(mux)
-	for _, origin := range []string{"https://manager.example", "https://commander.example"} {
-		t.Run(origin, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/auth/start?opener_origin="+url.QueryEscape(origin), nil)
-			result := httptest.NewRecorder()
-			mux.ServeHTTP(result, req)
-			if result.Code != http.StatusFound {
-				t.Fatalf("status=%d body=%s", result.Code, result.Body.String())
-			}
-			cookies := result.Result().Cookies()
-			if len(cookies) != 1 {
-				t.Fatalf("cookies=%v", cookies)
-			}
-			state, err := decodeTransient(cookies[0].Value)
-			if err != nil || state.OpenerOrigin != origin {
-				t.Fatalf("state=%#v err=%v", state, err)
-			}
-		})
-	}
-}
-
-func TestOAuthStartRejectsUnlistedOrMissingOpenerOrigin(t *testing.T) {
-	h, err := NewHandler(Config{ClientID: "id", PublicOrigin: "https://manager.example", CommanderOrigin: "https://commander.example", AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token"}, http.DefaultClient, time.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mux := http.NewServeMux()
-	h.Register(mux)
-	for _, target := range []string{"/auth/start", "/auth/start?opener_origin=https%3A%2F%2Fevil.example", "/auth/start?opener_origin=https%3A%2F%2Fcommander.example%2Fpath"} {
-		result := httptest.NewRecorder()
-		mux.ServeHTTP(result, httptest.NewRequest(http.MethodGet, target, nil))
-		if result.Code != http.StatusBadRequest || len(result.Result().Cookies()) != 0 {
-			t.Errorf("%s status=%d cookies=%v", target, result.Code, result.Result().Cookies())
-		}
-	}
-}
-
-func TestOAuthCallbackTargetsSavedPublicOrigin(t *testing.T) {
+	var gotForm url.Values
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "token", "expires_in": 300})
+		_ = r.ParseForm()
+		gotForm = r.Form
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "opaque-access-token", "expires_in": 900})
 	}))
 	defer tokenServer.Close()
-	h, err := NewHandler(Config{ClientID: "id", PublicOrigin: "https://manager.example", CommanderOrigin: "https://commander.example", AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: tokenServer.URL}, tokenServer.Client(), time.Now)
+	h := oauthTestHandler(t, tokenServer, func() time.Time { return now })
+	startReq := httptest.NewRequest(http.MethodPost, "https://manager.example.test/auth/start", nil)
+	recorder := httptest.NewRecorder()
+	authURL, err := h.Start(recorder, startReq, StartInput{ClientID: "client-before-edit", OpenerOrigin: "https://frontend.example.test", APIOrigin: "https://manager.example.test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux := http.NewServeMux()
-	h.Register(mux)
-	start := httptest.NewRecorder()
-	mux.ServeHTTP(start, httptest.NewRequest(http.MethodGet, "/auth/start?opener_origin=https%3A%2F%2Fmanager.example", nil))
-	if start.Code != http.StatusFound {
-		t.Fatalf("start status=%d", start.Code)
+	parsed, _ := url.Parse(authURL)
+	if parsed.Query().Get("client_id") != "client-before-edit" || parsed.Query().Get("redirect_uri") != "https://manager.example.test/auth/callback" || parsed.Query().Get("code_challenge_method") != "S256" {
+		t.Fatalf("unexpected URL %s", authURL)
 	}
-	state := start.Result().Cookies()[0]
-	location, err := url.Parse(start.Header().Get("Location"))
+	cookies := recorder.Result().Cookies()
+	if len(cookies) != 1 || !cookies[0].HttpOnly || !cookies[0].Secure {
+		t.Fatalf("unsafe state cookie: %#v", cookies)
+	}
+	state, err := h.decodeTransient(cookies[0].Value)
 	if err != nil {
 		t.Fatal(err)
 	}
-	callback := httptest.NewRequest(http.MethodGet, "/auth/callback?code=ok&state="+url.QueryEscape(location.Query().Get("state")), nil)
-	callback.AddCookie(state)
-	result := httptest.NewRecorder()
-	mux.ServeHTTP(result, callback)
-	if result.Code != http.StatusOK || !strings.Contains(result.Body.String(), `postMessage({type:"cloudflare-oauth-complete"},"https://manager.example")`) {
-		t.Fatalf("callback status=%d body=%s", result.Code, result.Body.String())
+	digest := sha256.Sum256([]byte(state.Verifier))
+	if parsed.Query().Get("code_challenge") != base64.RawURLEncoding.EncodeToString(digest[:]) {
+		t.Fatal("PKCE challenge mismatch")
+	}
+	state.ClientID = "client-after-edit" // callback must use the protected saved client ID instead
+	callback := httptest.NewRequest(http.MethodGet, "/auth/callback?code=abc&state="+url.QueryEscape(parsed.Query().Get("state")), nil)
+	callback.AddCookie(cookies[0])
+	out := httptest.NewRecorder()
+	h.callback(out, callback)
+	if out.Code != http.StatusOK || gotForm.Get("client_id") != "client-before-edit" || gotForm.Get("redirect_uri") != "https://manager.example.test/auth/callback" || !strings.Contains(out.Body.String(), `"https://frontend.example.test"`) {
+		t.Fatalf("status=%d form=%v body=%s", out.Code, gotForm, out.Body.String())
+	}
+	var access bool
+	for _, c := range out.Result().Cookies() {
+		if c.Name == accessCookieName && c.HttpOnly && c.Secure && c.Value == "opaque-access-token" {
+			access = true
+		}
+	}
+	if !access {
+		t.Fatal("secure HttpOnly access cookie missing")
+	}
+}
+
+func TestOAuthStartChecksAPIHostAndOrigin(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+	h := oauthTestHandler(t, ts, time.Now)
+	for _, in := range []StartInput{{ClientID: "", OpenerOrigin: "https://front.test", APIOrigin: "https://manager.test"}, {ClientID: "id", OpenerOrigin: "null", APIOrigin: "https://manager.test"}, {ClientID: "id", OpenerOrigin: "https://front.test", APIOrigin: "https://attacker.test"}, {ClientID: "id", OpenerOrigin: "https://front.test", APIOrigin: "http://manager.test"}} {
+		r := httptest.NewRequest(http.MethodPost, "https://manager.test/auth/start", nil)
+		w := httptest.NewRecorder()
+		if _, e := h.Start(w, r, in); e == nil || len(w.Result().Cookies()) != 0 {
+			t.Errorf("accepted %#v: err=%v cookies=%v", in, e, w.Result().Cookies())
+		}
+	}
+}
+
+func TestOAuthRejectsForgedExpiredAndMismatchedState(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("forged state reached token endpoint") }))
+	defer ts.Close()
+	now := time.Now()
+	h := oauthTestHandler(t, ts, func() time.Time { return now })
+	for _, value := range []string{"broken", func() string {
+		s := transientState{State: "state", Verifier: "verifier", ClientID: "id", RedirectURI: "https://manager.test/auth/callback", OpenerOrigin: "https://front.test", ExpiresAt: now.Add(-time.Second).Unix()}
+		v, _ := h.encodeTransient(s)
+		return v
+	}()} {
+		r := httptest.NewRequest(http.MethodGet, "/auth/callback?code=bad&state=state", nil)
+		r.AddCookie(&http.Cookie{Name: stateCookieName, Value: value})
+		w := httptest.NewRecorder()
+		h.callback(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("value %q status=%d", value, w.Code)
+		}
+	}
+}
+
+func TestOAuthStateSignatureCannotBeModified(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+	h := oauthTestHandler(t, ts, time.Now)
+	state := transientState{State: "s", Verifier: "v", OpenerOrigin: "https://front.test", ClientID: "id", RedirectURI: "https://manager.test/auth/callback", ExpiresAt: time.Now().Add(time.Minute).Unix()}
+	v, _ := h.encodeTransient(state)
+	parts := strings.Split(v, ".")
+	raw, _ := base64.RawURLEncoding.DecodeString(parts[0])
+	raw[len(raw)-2] ^= 1
+	forged := base64.RawURLEncoding.EncodeToString(raw) + "." + parts[1]
+	if _, err := h.decodeTransient(forged); err == nil {
+		t.Fatal("modified cookie verified")
 	}
 }
