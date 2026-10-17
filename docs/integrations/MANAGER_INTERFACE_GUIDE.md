@@ -2129,6 +2129,12 @@ Keep the Dockerfile minimal.
 
 When implementing a full-stack manager, keep the initial installer frontend separate from the actual manager frontend.
 
+The initial installer for a full-stack manager must remain separate from the actual manager frontend.
+
+The installer must not require the user to specify the full-stack manager's backend image or deployment runner. These must be predefined and configured automatically.
+
+Other installation options may be exposed as needed, unless explicitly instructed otherwise.
+
 7. Standard Deployment Runner
 
 Always use `ezenki/deploy-commander-runner` for deployment operations.
