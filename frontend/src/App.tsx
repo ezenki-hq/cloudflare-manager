@@ -22,6 +22,8 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
   const teardownRefreshVersion = useRef(0);
   const [auth, setAuth] = useState<AuthState>("checking");
   const [authError, setAuthError] = useState("");
+  const [clientID, setClientID] = useState("");
+  const [savingClientID, setSavingClientID] = useState(false);
   const [teardownHistory, setTeardownHistory] = useState<TeardownSnapshot | null>(null);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountId, setAccountId] = useState("");
@@ -113,6 +115,8 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
     return () => { live = false; };
   }, [api, refreshTeardown]);
 
+  useEffect(() => { void api.clientID().then(setClientID).catch((error) => setAuthError(message(error))); }, [api]);
+
   useEffect(() => () => {
     teardownRefreshVersion.current += 1;
     bridge.wire.end();
@@ -165,11 +169,16 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
   }, [api, backendOrigin]);
 
   const signIn = () => {
-    const url = new URL("/auth/start", backendOrigin || window.location.origin);
-    url.searchParams.set("opener_origin", window.location.origin);
-    popupRef.current = window.open(url.toString(), "cloudflare-oauth", "popup,width=640,height=760");
-    if (!popupRef.current) setAuthError("Allow popups for this Deploy Commander site, then try again.");
+    const popup = window.open("about:blank", "cloudflare-oauth", "popup,width=640,height=760");
+    popupRef.current = popup;
+    if (!popup) { setAuthError("Allow popups for this Deploy Commander site, then try again."); return; }
+    setAuthError("");
+    void api.startOAuth(clientID, window.location.origin, new URL(backendOrigin || window.location.origin, window.location.origin).origin)
+      .then(({ authorization_url }) => { if (popupRef.current === popup) popup.location.href = authorization_url; })
+      .catch((error) => { popup.close(); popupRef.current = null; setAuthError(message(error)); });
   };
+
+  const saveClient = async (event: React.FormEvent) => { event.preventDefault(); setSavingClientID(true); try { await api.saveClientID(clientID); setClientID(clientID.trim()); setAuthError(""); } catch (error) { setAuthError(message(error)); } finally { setSavingClientID(false); } };
 
   const selectBucket = async (bucket: Bucket) => {
     setSelectedBucket(bucket);
@@ -339,6 +348,14 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
       <div className="hero-stat"><span>YOUR ACCESS</span><strong>{auth === "signed-in" ? "Ready" : "Sign-in required"}</strong><small>OAuth stays with the signed-in user.</small></div>
     </section>
 
+    <section className="panel oauth-settings" aria-labelledby="oauth-settings-title">
+      <div className="panel-heading"><div><h2 id="oauth-settings-title">Cloudflare OAuth</h2><p>Set the public client ID used when connecting a Cloudflare account.</p></div></div>
+      <form className="oauth-settings-form" onSubmit={(event) => void saveClient(event)}>
+        <label htmlFor="cloudflare-client-id">OAuth client ID</label><input id="cloudflare-client-id" value={clientID} onChange={(event) => setClientID(event.target.value)} autoComplete="off" />
+        <div className="oauth-settings-actions"><button className="button button-secondary" disabled={savingClientID}>{savingClientID ? "Saving…" : "Save client ID"}</button><a className="button button-quiet" href="https://dash.cloudflare.com/?to=/:account/oauth-clients" target="_blank" rel="noopener noreferrer">Create or get a client ID ↗</a></div>
+      </form>
+    </section>
+
     {teardownHistory && <section className="run-summary" aria-label="teardown run status"><div><span className="muted-label">Latest teardown run</span><strong className={`run-status run-status-${teardownHistory.run.status}`}>{runStatus(teardownHistory.run.status)}</strong><span className="run-id">{teardownHistory.run.id}</span></div><div className="run-messages"><p>{teardownHistory.lastEvent?.message ?? "Run updates will appear here."}</p></div></section>}
 
     {auth !== "signed-in" ? <section className="panel auth-panel">
@@ -347,7 +364,7 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
       <p>{auth === "unavailable" ? "The manager API did not respond. Check the configured same-site route and service health." : "Sign in to Cloudflare to see your accounts. Access is personal to your Cloudflare user and is not shared with application credentials."}</p>
       {authError && <p className="inline-error" role="alert">{authError}</p>}
       {auth === "blocked" && <div className="cookie-help"><strong>Authorization finished, but this frame cannot read its session.</strong><p>Route the manager and Deploy Commander through the same HTTPS site. The Go API must allow the exact Commander origin, and the browser must accept the manager's host-only cookie in this embedded flow. Try opening the manager in a top-level tab if your browser blocks third-party cookies.</p></div>}
-      {auth !== "unavailable" && <button className="button button-primary" onClick={signIn}>Sign in with Cloudflare</button>}
+      {auth !== "unavailable" && <button className="button button-primary" onClick={signIn} disabled={!clientID.trim()}>Sign in with Cloudflare</button>}
       {auth === "unavailable" && <button className="button button-secondary" onClick={() => { setAuth("checking"); void api.session().then((result) => setAuth(result.authenticated ? "signed-in" : "signed-out")).catch((error) => { setAuth(statusOf(error) === 401 ? "signed-out" : "unavailable"); setAuthError(message(error)); }); }}>Retry connection</button>}
     </section> : <>
       {pageError && <div className="page-error" role="alert"><span>{pageError}</span><button onClick={() => setPageError("")} aria-label="Dismiss error">×</button></div>}

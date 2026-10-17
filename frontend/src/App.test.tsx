@@ -8,6 +8,9 @@ import { App } from "./App";
 
 function setup(apiOverrides: Partial<BackendAPI> = {}, callerOverrides: Partial<RPCCaller> = {}) {
   const api = {
+    clientID: vi.fn().mockResolvedValue("oauth-client"),
+    saveClientID: vi.fn().mockResolvedValue(undefined),
+    startOAuth: vi.fn().mockResolvedValue({ authorization_url: "https://cloudflare.example/authorize" }),
     session: vi.fn().mockResolvedValue({ authenticated: true }),
     listAccounts: vi.fn().mockResolvedValue([{ id: "account-1", name: "Production" }]),
     listZones: vi.fn().mockResolvedValue([{ id: "zone-1", name: "example.test" }]),
@@ -60,18 +63,19 @@ afterEach(cleanup);
 
 describe("Cloudflare Manager interface", () => {
   it("shows user initiated Cloudflare sign-in when the session is missing", async () => {
-    const popup = {} as Window;
+    const popup = { close: vi.fn(), location: { href: "" } } as unknown as Window;
     vi.spyOn(window, "open").mockReturnValue(popup);
     const { api, caller, bridge } = setup({ session: vi.fn().mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 })) });
     render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
     const button = await screen.findByRole("button", { name: /sign in with cloudflare/i });
     fireEvent.click(button);
-    expect(window.open).toHaveBeenCalledWith(expect.stringContaining("https://cf-manager.example.test/auth/start?opener_origin="), "cloudflare-oauth", expect.stringContaining("popup"));
+    expect(window.open).toHaveBeenCalledWith("about:blank", "cloudflare-oauth", expect.stringContaining("popup"));
+    expect(api.startOAuth).toHaveBeenCalledWith("oauth-client", window.location.origin, "https://cf-manager.example.test");
     expect(caller.start).not.toHaveBeenCalled();
   });
 
   it("shows same-site cookie guidance when popup authorization completes but session stays unauthorized", async () => {
-    const popup = {} as Window;
+    const popup = { close: vi.fn(), location: { href: "" } } as unknown as Window;
     vi.spyOn(window, "open").mockReturnValue(popup);
     const { api, bridge } = setup({ session: vi.fn().mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 })) });
     render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);

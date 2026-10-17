@@ -5,9 +5,9 @@ import { createCommanderBridge } from "./commander";
 import { handleChildAction } from "./childWorkflow";
 import "./styles.css";
 
-const backendOrigin = import.meta.env.VITE_BACKEND_ORIGIN?.trim() || window.location.origin;
+const backendOrigin = window.location.origin;
 const bridge = createCommanderBridge();
-const api = createBackendAPI(backendOrigin);
+const api = createBackendAPI(backendOrigin, bridge.caller);
 
 const root = createRoot(document.getElementById("root")!);
 void (async () => {
