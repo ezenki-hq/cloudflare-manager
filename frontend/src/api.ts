@@ -10,7 +10,7 @@ export interface BucketPage { buckets: Bucket[]; cursor?: string }
 export interface Domain { domain: string; enabled: boolean; zoneId?: string; status?: unknown }
 export interface CreateCredentialInput { jurisdiction: string; connection_id: string; permission: "read-only" | "read-write" }
 export interface CloudflareCredential { token_id: string; access_key_id: string; secret_access_key: string }
-export interface ConnectionSummary { connection: { id: string; resource: string; labels?: Record<string,string>; metadata?: Record<string,unknown> } }
+export interface ConnectionSummary { connection: { id: string; manager?: string; resource: string; labels?: Record<string,string>; metadata?: Record<string,unknown> } }
 export interface ProvisionResult { connection_id: string; token_id: string; access_key_id: string; secret_access_key: string }
 
 export interface BackendAPI {

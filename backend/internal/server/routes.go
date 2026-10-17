@@ -384,7 +384,7 @@ func safeConnection(d commander.ConnectionDetail) map[string]any {
 			metadata[key] = value
 		}
 	}
-	return map[string]any{"connection": map[string]any{"id": d.Connection.ID, "resource": d.Connection.Resource, "labels": d.Connection.Labels, "metadata": metadata}}
+	return map[string]any{"connection": map[string]any{"id": d.Connection.ID, "manager": d.Connection.Manager, "resource": d.Connection.Resource, "labels": d.Connection.Labels, "metadata": metadata}}
 }
 
 func validBucketInput(d routeData) bool {

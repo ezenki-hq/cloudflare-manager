@@ -1,77 +1,14 @@
 import type { RPCCaller } from "@ezenki/deploy-commander-installer-interface";
+import type { BackendAPI } from "./api";
 
 export const BUCKET_RESOURCE_TYPE = "cloudflare-r2-bucket";
+export interface ManagedBucket { accountId:string; jurisdiction:string; name:string; s3Endpoint:string; primaryDomain?:string }
 
-export interface ManagedBucket {
-  accountId: string;
-  jurisdiction: string;
-  name: string;
-  s3Endpoint: string;
-  primaryDomain?: string;
+export async function registerBucket(api:BackendAPI,bucket:ManagedBucket):Promise<string>{
+  const result=await api.registerResource({account_id:bucket.accountId,jurisdiction:bucket.jurisdiction,bucket:bucket.name,s3_endpoint:bucket.s3Endpoint,...(bucket.primaryDomain?{primary_domain:bucket.primaryDomain}:{})});
+  if(!result.resource_id)throw new Error("Manager did not return the R2 resource ID");return result.resource_id;
 }
-
-interface BucketMetadata {
-  account_id: string;
-  jurisdiction: string;
-  bucket_name: string;
-  s3_endpoint: string;
-  primary_domain?: string;
-}
-
-export async function registerBucket(caller: RPCCaller, bucket: ManagedBucket): Promise<string> {
-  const existing = await findBucketResource(caller, bucket);
-  if (existing) return existing.resource.id;
-  const metadata: BucketMetadata = {
-    account_id: bucket.accountId,
-    jurisdiction: bucket.jurisdiction,
-    bucket_name: bucket.name,
-    s3_endpoint: bucket.s3Endpoint,
-    ...(bucket.primaryDomain ? { primary_domain: bucket.primaryDomain } : {}),
-  };
-  const created = await caller.createResource({ metadata, name: bucket.name }, false, bucket.name, BUCKET_RESOURCE_TYPE);
-  return created.resource.id;
-}
-
-export async function findBucketResource(caller: RPCCaller, bucket: ManagedBucket) {
-  const resources = await allBucketResources(caller);
-  for (const resource of resources) {
-    const saved = await caller.getResource(resource.id);
-    if (matchesBucket(saved, bucket)) return saved;
-  }
-  return null;
-}
-
-export async function setBucketPrimaryDomain(caller: RPCCaller, resourceId: string, domain?: string): Promise<void> {
-  if (!resourceId.trim()) throw new Error("Resource ID is required");
-  const saved = await caller.getResource(resourceId);
-  const metadata = isRecord(saved.config.metadata) ? { ...saved.config.metadata } : {};
-  if (domain) metadata.primary_domain = domain;
-  else delete metadata.primary_domain;
-  await caller.updateResource(resourceId, { config: { metadata } });
-}
-
-export async function removeBucketRecord(caller: RPCCaller, resourceId: string): Promise<void> {
-  if (!resourceId.trim()) throw new Error("Resource ID is required");
-  await caller.deleteResource(resourceId);
-}
-
-async function allBucketResources(caller: RPCCaller) {
-  const result = [] as Awaited<ReturnType<RPCCaller["getMyResources"]>>["items"];
-  const limit = 100;
-  for (let offset = 0; offset < 5000; offset += limit) {
-    const page = await caller.getMyResources({ type: BUCKET_RESOURCE_TYPE, external: false, limit, offset });
-    result.push(...page.items.filter((item) => item.type === BUCKET_RESOURCE_TYPE));
-    if (result.length >= page.total || page.items.length < limit) return result;
-  }
-  throw new Error("Too many bucket resources to check safely");
-}
-
-function matchesBucket(saved: Awaited<ReturnType<RPCCaller["getResource"]>>, bucket: ManagedBucket): boolean {
-  const value: unknown = saved.config.metadata;
-  if (!isRecord(value)) return false;
-  return value.account_id === bucket.accountId && value.jurisdiction === bucket.jurisdiction && value.bucket_name === bucket.name;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
+export async function findBucketResource(api:BackendAPI,bucket:ManagedBucket){return api.findResource(bucket.accountId,bucket.jurisdiction,bucket.name)}
+export async function setBucketPrimaryDomain(caller:RPCCaller,resourceId:string,domain?:string):Promise<void>{if(!resourceId.trim())throw new Error("Resource ID is required");const saved=await caller.getResource(resourceId);const metadata=isRecord(saved.config.metadata)?{...saved.config.metadata}:{};if(domain)metadata.primary_domain=domain;else delete metadata.primary_domain;await caller.updateResource(resourceId,{config:{metadata}})}
+export async function removeBucketRecord(caller:RPCCaller,resourceId:string):Promise<void>{if(!resourceId.trim())throw new Error("Resource ID is required");await caller.deleteResource(resourceId)}
+function isRecord(value:unknown):value is Record<string,unknown>{return typeof value==="object"&&value!==null&&!Array.isArray(value)}

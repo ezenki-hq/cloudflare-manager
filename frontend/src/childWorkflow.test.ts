@@ -1,70 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
-import type { RPCCaller } from "@ezenki/deploy-commander-installer-interface";
-import type { BackendAPI } from "./api";
-import { handleChildAction } from "./childWorkflow";
+import {describe,expect,it,vi}from"vitest";
+import type{RPCCaller}from"@ezenki/deploy-commander-installer-interface";
+import type{BackendAPI}from"./api";
+import{handleChildAction}from"./childWorkflow";
 
-const groupLabels = { custom_deployer_group_id: "group-42", custom_deployer_connection_origin: "imported" };
-const resourceId = "resource-7";
-const connectionId = "connection-8";
-
-function mocks() {
-  const caller = {
-    getManager: vi.fn().mockResolvedValue("bucket-manager"),
-    getResource: vi.fn().mockResolvedValue({ resource: { id: resourceId, name: "images", type: "cloudflare-r2-bucket", manager: "bucket-manager", external: false, created_at: "", updated_at: "" }, config: { id: resourceId, manager: "bucket-manager", name: "images", agent: "", resource_type: "cloudflare-r2-bucket", metadata: { account_id: "account-1", jurisdiction: "default", bucket_name: "images", s3_endpoint: "https://account-1.r2.cloudflarestorage.com" } } }),
-    getConnection: vi.fn().mockResolvedValue({ connection: { id: connectionId, manager: "app-manager", resource: resourceId, external: false, created_at: "", updated_at: "", labels: { environment: "production", ...groupLabels } }, config: { id: connectionId, manager: "app-manager", metadata: { accountId: "account-1", jurisdiction: "default", bucket: "images", endpoint: "https://account-1.r2.cloudflarestorage.com", permission: "read-only", token_id: "token-1", status: "ready" } } }),
-    setConnectionLabel: vi.fn().mockResolvedValue(undefined),
-    removeConnectionLabel: vi.fn().mockResolvedValue(undefined),
-    deleteSecret: vi.fn().mockResolvedValue(undefined),
-    deleteConnection: vi.fn().mockResolvedValue(undefined),
-    updateConnection: vi.fn().mockResolvedValue(undefined),
-    createConnection: vi.fn().mockResolvedValue({ connection: { id: connectionId, manager: "app-manager", resource: resourceId, external: false, created_at: "", updated_at: "", labels: { custom_deployer_group_id: "group-42", custom_deployer_connection_origin: "created" } }, config: { id: connectionId, manager: "app-manager", metadata: {} } }),
-  } as unknown as RPCCaller;
-  const api = {
-    createCredential: vi.fn().mockResolvedValue({ token_id: "token-1", access_key_id: "key", secret_access_key: "secret" }),
-    revokeCredential: vi.fn().mockResolvedValue(undefined),
-    findCredential: vi.fn().mockResolvedValue({ token_id: "token-1" }),
-  } as unknown as BackendAPI;
-  return { caller, api };
+const groupLabels={custom_deployer_group_id:"group-42",custom_deployer_connection_origin:"imported"};const resourceId="resource-7",connectionId="connection-8";
+function mocks(){
+ const caller={getManager:vi.fn().mockResolvedValue("bucket-manager"),setSecret:vi.fn().mockResolvedValue(undefined),getSecretKeys:vi.fn().mockResolvedValue([{key:"AWS_ACCESS_KEY_ID"},{key:"AWS_SECRET_ACCESS_KEY"}])}as unknown as RPCCaller;
+ const api={provisionConnection:vi.fn().mockResolvedValue({connection_id:connectionId,token_id:"token",access_key_id:"key",secret_access_key:"secret"}),confirmConnection:vi.fn().mockResolvedValue({}),abortConnection:vi.fn().mockResolvedValue(undefined),linkConnection:vi.fn().mockResolvedValue({connection:{id:connectionId,resource:resourceId,labels:{environment:"production",...groupLabels}}}),unlinkConnection:vi.fn().mockResolvedValue({connection:{id:connectionId,resource:resourceId,labels:{environment:"production"}}}),deleteGroupConnections:vi.fn().mockResolvedValue({deleted:[connectionId]})}as unknown as BackendAPI;
+ return{caller,api};
 }
-
-describe("resource connection child actions", () => {
-  it("links an existing connection with exact group labels and keeps unrelated labels", async () => {
-    const { caller, api } = mocks();
-    const response = await handleChildAction(caller, api, { action: "link-connection", resource: resourceId, connection: connectionId, labels: { custom_deployer_group_id: "group-42", custom_deployer_connection_origin: "imported" } }, "app-manager");
-    expect(caller.setConnectionLabel).toHaveBeenCalledWith(connectionId, "custom_deployer_group_id", "group-42");
-    expect(caller.setConnectionLabel).toHaveBeenCalledWith(connectionId, "custom_deployer_connection_origin", "imported");
-    expect(response.ok).toBe(true);
-    expect(response.result).toEqual({ connection: { id: connectionId, resource: resourceId, labels: { custom_deployer_group_id: "group-42", custom_deployer_connection_origin: "imported" } } });
-    expect(JSON.stringify(response)).not.toContain("secret");
-    expect(api.createCredential).not.toHaveBeenCalled();
-  });
-
-  it("unlinks group labels while preserving unrelated labels and connection", async () => {
-    const { caller } = mocks();
-    const response = await handleChildAction(caller, {} as BackendAPI, { action: "unlink-connection", resource: resourceId, connection: connectionId, group: "group-42" }, "app-manager");
-    expect(caller.removeConnectionLabel).toHaveBeenCalledWith(connectionId, "custom_deployer_group_id");
-    expect(caller.removeConnectionLabel).toHaveBeenCalledWith(connectionId, "custom_deployer_connection_origin");
-    expect(caller.deleteConnection).not.toHaveBeenCalled();
-    expect(response.ok).toBe(true);
-  });
-
-  it("handles the guide's array of delete connection IDs", async () => {
-    const { caller, api } = mocks();
-    vi.mocked(caller.getConnection).mockResolvedValueOnce({
-      connection: { id: connectionId, manager: "app-manager", resource: resourceId, external: false, created_at: "", updated_at: "", labels: { custom_deployer_group_id: "group-42", custom_deployer_connection_origin: "created" } },
-      config: { id: connectionId, manager: "app-manager", resource: resourceId, metadata: { accountId: "account-1", jurisdiction: "default", bucket: "images", endpoint: "https://account-1.r2.cloudflarestorage.com", permission: "read-only", token_id: "token-1", status: "ready" } },
-    });
-    const response = await handleChildAction(caller, api, { action: "delete-connection", connections: [connectionId] }, "app-manager");
-    expect(response.ok).toBe(true);
-    expect(caller.deleteConnection).toHaveBeenCalledWith(connectionId);
-    expect(api.revokeCredential).toHaveBeenCalled();
-  });
-
-  it("rejects a connection attached to a different resource", async () => {
-    const { caller, api } = mocks();
-    vi.mocked(caller.getConnection).mockResolvedValueOnce({ connection: { id: connectionId, manager: "app-manager", resource: "other-resource", external: false, created_at: "", updated_at: "" }, config: { id: connectionId, manager: "app-manager", resource: "other-resource", metadata: {} } });
-    const response = await handleChildAction(caller, api, { action: "link-connection", resource: resourceId, connection: connectionId, labels: groupLabels }, "app-manager");
-    expect(response.ok).toBe(false);
-    expect(caller.setConnectionLabel).not.toHaveBeenCalled();
-  });
+describe("resource connection child actions",()=>{
+ it("creates a group connection, hands off secrets, then returns only authoritative identity",async()=>{const{caller,api}=mocks();const labels={custom_deployer_group_id:"group-42",custom_deployer_connection_origin:"created"};const response=await handleChildAction(caller,api,{action:"create-connection",resource:resourceId,labels},"app-manager");expect(api.provisionConnection).toHaveBeenCalledWith({resource_id:resourceId,manager_id:"app-manager",permission:"read-only",labels});expect(api.confirmConnection).toHaveBeenCalledWith(connectionId);expect(response).toEqual({manager:"bucket-manager",ok:true,result:{connection:{id:connectionId,resource:resourceId,labels}}});expect(JSON.stringify(response)).not.toContain("secret")});
+ it("links and unlinks through Go while preserving authoritative unrelated labels",async()=>{const{caller,api}=mocks();const linked=await handleChildAction(caller,api,{action:"link-connection",resource:resourceId,connection:connectionId,labels:groupLabels},"app-manager");expect(api.linkConnection).toHaveBeenCalledWith({resource_id:resourceId,connection_id:connectionId,labels:groupLabels});expect(linked.result).toEqual({id:connectionId,resource:resourceId,labels:{environment:"production",...groupLabels}});const unlinked=await handleChildAction(caller,api,{action:"unlink-connection",resource:resourceId,connection:connectionId,group:"group-42"},"app-manager");expect(api.unlinkConnection).toHaveBeenCalledWith({resource_id:resourceId,connection_id:connectionId,group:"group-42"});expect(unlinked.result).toEqual({id:connectionId,resource:resourceId,labels:{environment:"production"}})});
+ it("passes the guide's deletion ID array to the backend",async()=>{const{caller,api}=mocks();const response=await handleChildAction(caller,api,{action:"delete-connection",connections:[connectionId]},"app-manager");expect(api.deleteGroupConnections).toHaveBeenCalledWith([connectionId]);expect(response).toEqual({manager:"bucket-manager",ok:true,result:{connections:[{id:connectionId}]}})});
+ it("returns a failure response for invalid child identity or labels",async()=>{const{caller,api}=mocks();const response=await handleChildAction(caller,api,{action:"link-connection",resource:resourceId,connection:connectionId,labels:{...groupLabels,secret:"no"}},"app-manager");expect(response.ok).toBe(false);expect(api.linkConnection).not.toHaveBeenCalled()});
 });

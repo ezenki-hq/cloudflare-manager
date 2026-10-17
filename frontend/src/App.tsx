@@ -193,7 +193,7 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
         api.getBucket(accountId, bucketJurisdiction, bucket.name),
         api.listDomains(accountId, bucketJurisdiction, bucket.name),
         api.listZones(accountId),
-        findBucketResource(caller, { accountId, jurisdiction: bucketJurisdiction, name: bucket.name, s3Endpoint: s3Endpoint(accountId, bucketJurisdiction) }),
+        findBucketResource(api, { accountId, jurisdiction: bucketJurisdiction, name: bucket.name, s3Endpoint: s3Endpoint(accountId, bucketJurisdiction) }),
       ]);
       setSelectedDetail(detail);
       setDomains(domainList);
@@ -205,17 +205,10 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
   const refreshConnections = useCallback(async (id: string) => {
     if (!id) { setConnections([]); return; }
     try {
-      const items = await listAllConnections(caller, id);
-      const saved = await Promise.all(items.map(async (item) => {
-        try {
-          const detail = await caller.getConnection(item.id);
-          const metadata = isRecord(detail.config.metadata) ? detail.config.metadata : {};
-          return isManagedConnection(metadata) ? { id: item.id, manager: item.manager, metadata } : null;
-        } catch { return null; }
-      }));
-      setConnections(saved.filter((item): item is NonNullable<typeof item> => item !== null));
+      const items = await api.listConnections(id);
+      setConnections(items.map(({ connection }) => ({ id: connection.id, manager: connection.manager ?? "", metadata: connection.metadata ?? {} })));
     } catch (error) { setPageError(message(error)); }
-  }, [caller]);
+  }, [api]);
 
   useEffect(() => {
     if (!resourceId) { setConnections([]); setAppManagers([]); return; }
@@ -231,7 +224,7 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
   const trackBucket = async () => {
     if (!currentBucket) return;
     await runAction("track", async () => {
-      const id = await registerBucket(caller, currentBucket);
+      const id = await registerBucket(api, currentBucket);
       setResourceId(id);
     });
   };
@@ -257,7 +250,7 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
     if (!selectedBucket) return;
     await runAction("primary", async () => {
       let id = resourceId;
-      if (!id) id = await registerBucket(caller, {
+      if (!id) id = await registerBucket(api, {
         accountId, jurisdiction: selectedBucket.jurisdiction ?? jurisdiction, name: selectedBucket.name,
         s3Endpoint: s3Endpoint(accountId, selectedBucket.jurisdiction ?? jurisdiction), ...(domain ? { primaryDomain: domain } : {}),
       });
@@ -289,14 +282,6 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
     const bucketLabel = `${accountName(accounts, accountId)} / ${selectedBucket.name}`;
     if (!window.confirm(`Delete ${bucketLabel}? Applications will lose access. Cloudflare only deletes empty buckets; bucket contents will not be removed by this manager.`)) return;
     await runAction("delete-bucket", async () => {
-      if (resourceId) {
-        const items = await listAllConnections(caller, resourceId);
-        const saved = await Promise.all(items.map((connection) => caller.getConnection(connection.id)));
-        if (saved.some((connection) => !isManagedConnection(connection.config.metadata))) {
-          throw new Error("Remove the non-Cloudflare connection from this bucket before deleting it.");
-        }
-        for (const connection of items) await revokeConnection(caller, api, connection.id);
-      }
       const jurisdictionValue = selectedBucket.jurisdiction ?? jurisdiction;
       await api.deleteBucket(accountId, jurisdictionValue, selectedBucket.name);
       if (resourceId) await removeBucketRecord(caller, resourceId);
@@ -313,7 +298,7 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
     await runAction("create-bucket", async () => {
       const bucket = await api.createBucket(accountId, jurisdiction, bucketName.trim());
       const managed: ManagedBucket = { accountId, jurisdiction, name: bucket.name, s3Endpoint: s3Endpoint(accountId, jurisdiction) };
-      await registerBucket(caller, managed);
+      await registerBucket(api, managed);
       setBucketName("");
       await loadBuckets();
       await selectBucket(bucket);
@@ -412,23 +397,4 @@ function message(error: unknown): string { return error instanceof Error ? error
 function isRecord(value: unknown): value is Record<string, any> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function accountName(accounts: Account[], id: string): string { return accounts.find((account) => account.id === id)?.name ?? id; }
 function s3Endpoint(accountId: string, jurisdiction: string): string { return `https://${accountId}${jurisdiction === "default" ? "" : `.${jurisdiction}`}.r2.cloudflarestorage.com`; }
-function isManagedConnection(value: unknown): boolean {
-  return isRecord(value)
-    && ["pending", "ready", "revoke_pending", "revoked"].includes(String(value.status))
-    && (value.permission === "read-only" || value.permission === "read-write")
-    && typeof value.accountId === "string"
-    && typeof value.bucket === "string"
-    && typeof value.jurisdiction === "string"
-    && typeof value.endpoint === "string";
-}
-async function listAllConnections(caller: CommanderBridge["caller"], resource: string) {
-  const result: Awaited<ReturnType<typeof caller.getConnections>>["items"] = [];
-  const limit = 100;
-  for (let offset = 0; offset < 5000; offset += limit) {
-    const page = await caller.getConnections({ resource, limit, offset, include_labels: true });
-    result.push(...page.items);
-    if (result.length >= page.total || page.items.length < limit) return result;
-  }
-  throw new Error("Too many bucket connections to process safely");
-}
 function apiOrigin(value: string): string { try { return new URL(value || window.location.origin, window.location.origin).origin; } catch { return window.location.origin; } }

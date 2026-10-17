@@ -239,7 +239,7 @@ func (s *Service) Abort(ctx context.Context, cfToken, connectionID string) error
 	return s.deleteOne(ctx, cfToken, connectionID, false)
 }
 func (s *Service) Revoke(ctx context.Context, cfToken, connectionID string) error {
-	return s.deleteOne(ctx, cfToken, connectionID, true)
+	return s.deleteOne(ctx, cfToken, connectionID, false)
 }
 func (s *Service) deleteOne(ctx context.Context, cfToken, id string, requireCreated bool) error {
 	detail, err := s.commander.GetConnection(ctx, id)

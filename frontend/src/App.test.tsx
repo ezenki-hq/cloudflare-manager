@@ -24,6 +24,17 @@ function setup(apiOverrides: Partial<BackendAPI> = {}, callerOverrides: Partial<
     createCredential: vi.fn(),
     findCredential: vi.fn(),
     revokeCredential: vi.fn(),
+    findResource: vi.fn().mockResolvedValue(null),
+    registerResource: vi.fn().mockResolvedValue({ resource_id: "resource-1" }),
+    listConnections: vi.fn().mockResolvedValue([]),
+    provisionConnection: vi.fn(),
+    confirmConnection: vi.fn(),
+    abortConnection: vi.fn(),
+    revokeConnection: vi.fn(),
+    linkConnection: vi.fn(),
+    unlinkConnection: vi.fn(),
+    deleteGroupConnections: vi.fn(),
+    prepareTeardown: vi.fn(),
     ...apiOverrides,
   } as unknown as BackendAPI;
   const caller = {
