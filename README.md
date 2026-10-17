@@ -1,6 +1,6 @@
 # Cloudflare Manager for Deploy Commander
 
-A Deploy Commander manager for Cloudflare R2. This repository contains two independent React projects: `installer/` starts and monitors service installations, while `frontend/` is the management UI bundled into the Go service image. The Go service owns Cloudflare OAuth and proxies Cloudflare API requests. Both interfaces use Deploy Commander manager-scoped RPC for durable runs and manager data.
+A Deploy Commander manager for Cloudflare R2. This repository contains two independent React projects: `installer/` approves the Commander connection and starts or monitors installation runs, while `frontend/` is the management UI bundled into the Go service image. The Go service owns Cloudflare OAuth, Cloudflare API calls, and R2 resource and connection workflows.
 
 Cloudflare user authorization lives in a short-lived `Secure`, `HttpOnly` cookie. It is not stored in Deploy Commander, refreshed, or persisted by this service. Application S3 credentials are separate account-owned Cloudflare tokens scoped to one bucket; their access key and secret are stored in the requesting application's Deploy Commander connection secrets.
 
@@ -26,17 +26,14 @@ Cloudflare OAuth scope names match API token permission names. Select the corres
 
 ## Build and publish the installer
 
-The installer is its own Deploy Commander project. Set its build defaults in the environment or `installer/.env` (ignored by git):
+The installer is its own Deploy Commander project. Its only configurable build defaults are the service and runner images:
 
 | Variable | Purpose |
 | --- | --- |
 | `VITE_BACKEND_IMAGE` | Manager service image to install; defaults to `ezenki/cloudflare-manager:latest` |
-| `VITE_RUNNER_IMAGE` | Supported Deploy Commander runner image; pin to a version tag or digest |
-| `VITE_CF_CLIENT_ID` | Public Cloudflare OAuth client ID |
-| `VITE_PUBLIC_ORIGIN` | HTTPS public origin for the manager service and OAuth callback |
-| `VITE_COMMANDER_ORIGIN` | Exact HTTPS origin serving Deploy Commander; defaults to the installer page origin |
+| `VITE_RUNNER_IMAGE` | Values-capable Deploy Commander runner; defaults to the multi-architecture image digest `ezenki/deploy-commander-runner@sha256:d3bdcc6470a469ca8344310e94292743e0020ef16bc097b6e9cc8b64d6c347c8` |
 
-`PUBLIC_ORIGIN` and `COMMANDER_ORIGIN` must be the exact HTTPS origins configured for the service. The OAuth callback is `PUBLIC_ORIGIN/auth/callback`. The manager and Commander origins must be subdomains of the same registrable site for the embedded host-only session cookie. Go allows API browser requests only from those two configured origins.
+The installer has one Install action. It discovers the reserved Commander manager and resource, requests approval for a Commander connection when needed, verifies the connection secret, and starts the run. The optional OAuth client ID can be saved from the installer or frontend settings. The OAuth callback is the manager's HTTPS origin plus `/auth/callback` and must be registered on the Cloudflare client.
 
 ```sh
 cd installer
@@ -50,7 +47,7 @@ For publishing, put `COMMANDER_URL`, `COMMANDER_USERNAME`, and `COMMANDER_PASSWO
 
 ## Build the management frontend
 
-The management UI is a separate Vite project, but it is served by the Go service rather than published to Deploy Commander. `VITE_BACKEND_ORIGIN` optionally sets its API origin when the UI is hosted separately; when bundled into the service, it defaults to the page's current origin.
+The management UI is a separate Vite project, but it is served by the Go service rather than published to Deploy Commander. It discovers its host from `window.location.origin` and uses the manager RPC to load the client ID and JWT secret when it starts.
 
 ```sh
 cd frontend
@@ -67,9 +64,9 @@ Keep the runner pinned to a version tag or SHA-256 digest, and check the support
 
 ## Install and operate
 
-Open the published installer inside Deploy Commander. It starts the installation run and displays the run status and latest structured install event, including after a reload. Confirm the manager image, supported runner image, OAuth client ID, manager public origin, and exact Commander origin, then start installation. The runner configures the service on the manager network, waits for the `/healthz` health check, and sets the redirect to the healthy service.
+Open the published installer inside Deploy Commander and click Install. It displays the run status and latest structured install event, including after a reload. The runner configures the service with its approved Commander connection, waits for the `/healthz` health check, and sets the redirect to the healthy service.
 
-Use an HTTPS custom hostname for the service's public origin. It and the Commander UI must be same-site so the host-only, `SameSite=Lax` OAuth cookie is available in the embedded UI. The manager must be routed only through that TLS origin. A raw internal HTTP alias works for runner-to-service traffic and is not the OAuth public origin. If a browser blocks embedded cookies anyway, the interface explains the restriction and supports completing sign-in from a top-level tab.
+Use an HTTPS custom hostname for the manager. The OAuth callback is derived from the request host, and the protected state cookie carries that redirect through callback. The host-only, `SameSite=Lax` access cookie must be available to the manager frontend. A raw internal HTTP alias works for runner-to-service traffic and is not the public OAuth origin.
 
 After installation, the manager redirects to its bundled frontend. Sign in with Cloudflare, select an account and R2 jurisdiction, then manage buckets and custom CDN domains. Track a bucket to create its Deploy Commander resource. Create an application connection to provision one bucket-scoped S3 credential pair. Secrets are stored only through Deploy Commander secret RPC and are never returned in manager metadata. Revoking a connection revokes its Cloudflare token and deletes its stored secrets. The frontend displays teardown status and the latest structured teardown event, including after a reload. Teardown revokes manager-owned application tokens and removes the manager's bucket resource records before starting one `teardown` run; it preserves Cloudflare buckets and domains. Once teardown succeeds, the installer permits a later installation run.
 
@@ -81,13 +78,14 @@ The service receives these environment variables from the install run:
 
 | Variable | Purpose |
 | --- | --- |
-| `CF_CLIENT_ID` | Cloudflare OAuth client ID |
-| `PUBLIC_ORIGIN` | HTTPS origin for the manager and OAuth callback |
-| `COMMANDER_ORIGIN` | Exact HTTPS Deploy Commander browser origin allowed for CORS and OAuth popup delivery |
+| `MANAGER_ID` | Cloudflare Manager's Deploy Commander manager ID |
+| `MANAGER_API` | Approved Commander API address ending in `/api/v1` |
+| `MANAGER_PASSWORD` | Runner reference to the Commander connection's `COMMANDER_PASSWORD` secret |
+| `JWT_SECRET` | Random 32-byte unpadded base64url signing value generated by the runner and saved to manager settings |
 | `PORT` | HTTP listen port; default `8080` |
 | `STATIC_DIR` | Published interface assets inside the image; default `/app/frontend/dist` |
 
-OAuth URLs use Cloudflare's production authorization and token endpoints. The API uses Cloudflare's API endpoint. No OAuth token database, secret key, refresh job, or token refresh endpoint is required.
+OAuth URLs use Cloudflare's production authorization and token endpoints. The Cloudflare client ID and JWT secret are stored in `manager_settings:current`. Browser-to-Go operations use short-lived HS256 JWTs in POST bodies; the JWT secret is read through authorized manager RPC and held in browser memory. Cloudflare access tokens remain in a secure HttpOnly cookie.
 
 ## Local development
 
@@ -97,14 +95,14 @@ cd ../frontend && npm ci && npm test -- --run && npm run build
 cd ../backend && go test ./... && go vet ./...
 ```
 
-For the installer, set the `VITE_*` defaults above before building or in `installer/.env`. For a separately hosted management frontend, set `VITE_BACKEND_ORIGIN` to the Go service's HTTPS origin. For the backend, set `CF_CLIENT_ID`, `PUBLIC_ORIGIN`, and `COMMANDER_ORIGIN` before running `go run ./cmd/cloudflare-manager`.
+Override the installer image defaults with `VITE_BACKEND_IMAGE` or `VITE_RUNNER_IMAGE` when building. The backend requires the four manager and secret environment variables shown above.
 
 ## Verification gates
 
 Before live use, verify in Deploy Commander staging with disposable Cloudflare resources:
 
 1. Install with pinned manager and supported runner images; confirm the run waits for health before redirecting.
-2. Complete OAuth in the popup and verify the embedded same-site session. Confirm cookies are host-only, Secure, HttpOnly, and expire with the access token.
+2. Complete OAuth in the popup and verify the manager session. Confirm cookies are host-only, Secure, HttpOnly, and expire with the access token.
 3. List accounts and buckets; create and delete an empty test bucket; attach and detach a test custom domain.
 4. Provision a read-only and read/write application connection; verify the token policy names exactly one bucket; then revoke and confirm the token and both connection secrets are removed.
 5. Teardown and verify the Commander redirect clears before service resources are removed, while Cloudflare buckets and domains remain.

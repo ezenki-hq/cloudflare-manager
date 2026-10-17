@@ -7,7 +7,7 @@ import { InstallApp } from "./InstallApp";
 
 const defaults = {
   backendImage: "ghcr.io/ezenki/cloudflare-manager:1.2.3",
-  runnerImage: "ezenki/deploy-commander-runner:1.2.3",
+  runnerImage: "ezenki/deploy-commander-runner@sha256:d3bdcc6470a469ca8344310e94292743e0020ef16bc097b6e9cc8b64d6c347c8",
 };
 const install: RunItem = { id: "install-1", action: "install", status: 1, queued_at: "2026-10-16T10:00:00Z", created_at: "2026-10-16T10:00:00Z", updated_at: "2026-10-16T10:00:00Z" };
 

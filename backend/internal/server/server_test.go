@@ -96,6 +96,15 @@ func TestSignedRouteValidatesTypedDataBeforeCloudflare(t *testing.T) {
 	}
 }
 
+func TestSignedRouteRejectsFieldsOutsideRouteContract(t *testing.T) {
+	h := NewHandler(Config{ManagerID: testManager, JWTSecret: testKey}, nil, cloudflare.NewClient("https://api.cloudflare.com", nil), nil)
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, signedRequest(t, "/api/session", testOrigin, map[string]any{"account_id": "account1"}))
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestSafePreflightAndStaticHealthExceptions(t *testing.T) {
 	staticDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("manager interface"), 0o600); err != nil {

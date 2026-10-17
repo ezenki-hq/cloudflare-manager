@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RPCCaller, RunItem, Wire } from "@ezenki/deploy-commander-installer-interface";
 import { buildInstallRun, installationState, startInstall, type InstallInput } from "./installer";
 
-const input: InstallInput = { backendImage: "ghcr.io/ezenki/cloudflare-manager:latest", runnerImage: "ezenki/deploy-commander-runner:1.2.3" };
+const input: InstallInput = { backendImage: "ghcr.io/ezenki/cloudflare-manager:latest", runnerImage: "ezenki/deploy-commander-runner@sha256:d3bdcc6470a469ca8344310e94292743e0020ef16bc097b6e9cc8b64d6c347c8" };
 const commander = { resourceId: "commander-resource", connectionId: "connection-id", managerAPI: "http://commander:6080/api/v1" };
 const run = (action: string, status: number, queued_at: string): RunItem => ({ id: `${action}-${status}`, action, status, queued_at, created_at: queued_at, updated_at: queued_at });
 

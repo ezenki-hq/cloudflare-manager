@@ -21,13 +21,14 @@ function mocks() {
     getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown"
       ? { id: "teardown-run", action: "teardown", status: 2, created_at: "", queued_at: "", updated_at: "" }
       : { id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }),
-    getRun: vi.fn().mockResolvedValue({ run: { id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }, config: { action: "install", manager: "manager", run: "install-run", runner: "ezenki/deploy-commander-runner:1.2.3", metadata: {} } }),
+    getRun: vi.fn().mockResolvedValue({ run: { id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }, config: { action: "install", manager: "manager", run: "install-run", runner: "ezenki/deploy-commander-runner@sha256:d3bdcc6470a469ca8344310e94292743e0020ef16bc097b6e9cc8b64d6c347c8", metadata: {} } }),
     getRunUpdates: vi.fn().mockResolvedValue({ events: { events: [] }, logs: { items: [] } }),
     getRunEvents: vi.fn().mockResolvedValue({ events: [{ seq: 3, message: "Runner stopped" }], limit: 1, offset: 0, total: 3 }),
     start: vi.fn().mockImplementation(async (options: any) => { sequence.push("start"); return { id: "teardown-run", queued_at: "now", status: 0, options }; }),
   } as unknown as RPCCaller;
   const api = {
     session: vi.fn().mockResolvedValue({ authenticated: true }),
+    prepareTeardown: vi.fn().mockResolvedValue({ resource_ids: [resourceId] }).mockImplementation(async () => { sequence.push("prepare"); return { resource_ids: [resourceId] }; }),
     revokeCredential: vi.fn().mockResolvedValue(undefined).mockImplementation(async () => { sequence.push("cloudflare"); }),
     findCredential: vi.fn().mockResolvedValue({ token_id: "token-1" }),
   } as unknown as BackendAPI;
@@ -35,13 +36,13 @@ function mocks() {
 }
 
 describe("manager teardown", () => {
-  it("revokes application tokens and removes records before one teardown run", async () => {
+  it("asks Go to clean connections, removes safe resource records, then starts one teardown run", async () => {
     const { caller, api, sequence } = mocks();
     const result = await startTeardown(caller, api);
-    expect(sequence).toEqual(["cloudflare", "secret", "secret", "connection", "resource", "start"]);
+    expect(sequence).toEqual(["prepare", "resource", "start"]);
     expect(caller.start).toHaveBeenCalledOnce();
     const options = vi.mocked(caller.start).mock.calls[0]?.[0] as any;
-    expect(options).toEqual({ action: "teardown", runner: "ezenki/deploy-commander-runner:1.2.3", platform: "docker" });
+    expect(options).toEqual({ action: "teardown", runner: "ezenki/deploy-commander-runner@sha256:d3bdcc6470a469ca8344310e94292743e0020ef16bc097b6e9cc8b64d6c347c8", platform: "docker" });
     expect(result.id).toBe("teardown-run");
   });
 
@@ -52,11 +53,19 @@ describe("manager teardown", () => {
     expect(caller.start).not.toHaveBeenCalled();
   });
 
-  it("blocks teardown and retains records when Cloudflare revocation fails", async () => {
+  it("blocks teardown and retains resources when Go cannot finish cleanup", async () => {
     const { caller, api } = mocks();
-    vi.mocked(api.revokeCredential).mockRejectedValueOnce(new Error("Cloudflare unavailable"));
+    vi.mocked(api.prepareTeardown).mockRejectedValueOnce(new Error("Cloudflare unavailable"));
     await expect(startTeardown(caller, api)).rejects.toThrow("Cloudflare unavailable");
     expect(caller.deleteConnection).not.toHaveBeenCalled();
+    expect(caller.deleteResource).not.toHaveBeenCalled();
+    expect(caller.start).not.toHaveBeenCalled();
+  });
+
+  it("keeps resource records and does not start teardown unless Go marks every resource safe", async () => {
+    const { caller, api } = mocks();
+    vi.mocked(api.prepareTeardown).mockResolvedValue({ resource_ids: [] });
+    await expect(startTeardown(caller, api)).rejects.toThrow(/connections or could not be cleaned up/i);
     expect(caller.deleteResource).not.toHaveBeenCalled();
     expect(caller.start).not.toHaveBeenCalled();
   });

@@ -34,6 +34,19 @@ type routeData struct {
 }
 
 func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMessage) error {
+	allowed, exists := routeFields[r.URL.Path]
+	if !exists {
+		return fail(http.StatusNotFound, "not_found", "API route not found")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		return fail(http.StatusBadRequest, "invalid_request", "Invalid operation data")
+	}
+	for key := range fields {
+		if _, ok := allowed[key]; !ok {
+			return fail(http.StatusBadRequest, "invalid_request", "Invalid operation data")
+		}
+	}
 	var d routeData
 	if err := decodeData(raw, &d); err != nil {
 		return fail(http.StatusBadRequest, "invalid_request", "Invalid operation data")
@@ -374,6 +387,42 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 	default:
 		return fail(http.StatusNotFound, "not_found", "API route not found")
 	}
+}
+
+var routeFields = map[string]map[string]struct{}{
+	"/auth/start":                   fieldSet("client_id", "opener_origin", "api_origin"),
+	"/api/session":                  fieldSet(),
+	"/api/accounts/list":            fieldSet(),
+	"/api/zones/list":               fieldSet("account_id"),
+	"/api/buckets/list":             fieldSet("account_id", "jurisdiction", "cursor"),
+	"/api/buckets/get":              fieldSet("account_id", "jurisdiction", "bucket"),
+	"/api/buckets/create":           fieldSet("account_id", "jurisdiction", "bucket"),
+	"/api/buckets/delete":           fieldSet("account_id", "jurisdiction", "bucket"),
+	"/api/domains/list":             fieldSet("account_id", "jurisdiction", "bucket"),
+	"/api/domains/attach":           fieldSet("account_id", "jurisdiction", "bucket", "domain", "zone_id"),
+	"/api/domains/detach":           fieldSet("account_id", "jurisdiction", "bucket", "domain"),
+	"/api/credentials/create":       fieldSet("account_id", "bucket", "jurisdiction", "connection_id", "permission"),
+	"/api/credentials/find":         fieldSet("account_id", "connection_id"),
+	"/api/credentials/revoke":       fieldSet("account_id", "token_id", "connection_id"),
+	"/api/resources/find":           fieldSet("account_id", "jurisdiction", "bucket"),
+	"/api/resources/register":       fieldSet("account_id", "jurisdiction", "bucket", "s3_endpoint", "primary_domain"),
+	"/api/connections/list":         fieldSet("resource_id"),
+	"/api/connections/provision":    fieldSet("resource_id", "manager_id", "permission", "labels"),
+	"/api/connections/confirm":      fieldSet("connection_id"),
+	"/api/connections/abort":        fieldSet("connection_id"),
+	"/api/connections/revoke":       fieldSet("connection_id"),
+	"/api/connections/link":         fieldSet("resource_id", "connection_id", "labels"),
+	"/api/connections/unlink":       fieldSet("resource_id", "connection_id", "group"),
+	"/api/connections/delete-group": fieldSet("connections"),
+	"/api/teardown/prepare":         fieldSet(),
+}
+
+func fieldSet(fields ...string) map[string]struct{} {
+	out := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		out[field] = struct{}{}
+	}
+	return out
 }
 
 func safeConnection(d commander.ConnectionDetail) map[string]any {

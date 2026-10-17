@@ -94,7 +94,6 @@ func (s *Server) signed(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Access-Control-Allow-Origin", origin)
 	w.Header().Set("Access-Control-Allow-Credentials", "true")
-	w.Header().Add("Vary", "Origin")
 	if err := s.dispatch(w, r, claims.Data); err != nil {
 		var response *routeError
 		if errors.As(err, &response) {

@@ -10,11 +10,12 @@ import (
 )
 
 type fakeCommander struct {
-	resources  []commander.Resource
-	resource   commander.ResourceDetail
-	connection commander.ConnectionDetail
-	deleted    []string
-	labels     map[string]string
+	resources      []commander.Resource
+	resource       commander.ResourceDetail
+	connection     commander.ConnectionDetail
+	connectionList []commander.Connection
+	deleted        []string
+	labels         map[string]string
 }
 type fakeCloudflare struct {
 	createErr bool
@@ -31,7 +32,7 @@ func (f *fakeCommander) CreateResource(context.Context, commander.ResourceCreate
 	return f.resource, nil
 }
 func (f *fakeCommander) ListConnections(context.Context, string) ([]commander.Connection, error) {
-	return nil, nil
+	return append([]commander.Connection(nil), f.connectionList...), nil
 }
 func (f *fakeCommander) GetConnection(context.Context, string) (commander.ConnectionDetail, error) {
 	return f.connection, nil
@@ -48,6 +49,13 @@ func (f *fakeCommander) UpdateConnection(_ context.Context, _ string, metadata a
 }
 func (f *fakeCommander) DeleteConnection(_ context.Context, id string) error {
 	f.deleted = append(f.deleted, id)
+	filtered := f.connectionList[:0]
+	for _, item := range f.connectionList {
+		if item.ID != id {
+			filtered = append(filtered, item)
+		}
+	}
+	f.connectionList = filtered
 	return nil
 }
 func (f *fakeCommander) PutConnectionLabel(_ context.Context, _, key, value string) error {
@@ -139,5 +147,31 @@ func TestProvisionCloudflareFailureDeletesPendingConnection(t *testing.T) {
 	}
 	if len(cc.deleted) != 1 || cc.deleted[0] != "c1" {
 		t.Fatalf("pending connection not removed: %v", cc.deleted)
+	}
+}
+
+func TestPrepareTeardownFindsAndRevokesCredentialForPendingRecord(t *testing.T) {
+	cc := &fakeCommander{resources: []commander.Resource{{ID: "r1", Manager: "manager-1", Type: ResourceType}}, resource: commander.ResourceDetail{Resource: commander.Resource{ID: "r1", Manager: "manager-1", Type: ResourceType}}, connection: commander.ConnectionDetail{Connection: commander.Connection{ID: "c1", Manager: "app-1", Resource: "r1"}, Config: commander.ConnectionConfig{Metadata: map[string]any{"status": "pending", "accountId": "account1"}}}, connectionList: []commander.Connection{{ID: "c1", Manager: "app-1", Resource: "r1"}}}
+	cf := &fakeCloudflare{}
+	s := NewService("manager-1", cc, cf)
+	safe, err := s.PrepareTeardown(context.Background(), "oauth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(safe) != 1 || safe[0] != "r1" || len(cf.revoked) != 1 || len(cc.deleted) != 1 {
+		t.Fatalf("safe=%v revoked=%v deleted=%v", safe, cf.revoked, cc.deleted)
+	}
+}
+
+func TestPrepareTeardownLeavesResourcesWithUnmanagedConnections(t *testing.T) {
+	cc := &fakeCommander{resources: []commander.Resource{{ID: "r1", Manager: "manager-1", Type: ResourceType}}, resource: commander.ResourceDetail{Resource: commander.Resource{ID: "r1", Manager: "manager-1", Type: ResourceType}}, connection: commander.ConnectionDetail{Connection: commander.Connection{ID: "external", Manager: "app-1", Resource: "r1"}, Config: commander.ConnectionConfig{Metadata: map[string]any{}}}, connectionList: []commander.Connection{{ID: "external", Manager: "app-1", Resource: "r1"}}}
+	cc.connection.Connection.ID = "external"
+	s := NewService("manager-1", cc, &fakeCloudflare{})
+	safe, err := s.PrepareTeardown(context.Background(), "oauth")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(safe) != 0 || len(cc.deleted) != 0 {
+		t.Fatalf("unsafe resource returned: %v deleted=%v", safe, cc.deleted)
 	}
 }

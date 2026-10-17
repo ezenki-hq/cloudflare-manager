@@ -218,7 +218,6 @@ func (s *Service) Confirm(ctx context.Context, connectionID string) (commander.C
 	metadata["status"] = "ready"
 	metadata["secret_keys"] = []string{secretAccessKey, secretSecretKey}
 	group := stringValue(metadata["pending_group_id"])
-	delete(metadata, "pending_group_id")
 	if status != "ready" {
 		if err := s.commander.UpdateConnection(ctx, connectionID, metadata); err != nil {
 			return detail, err
@@ -229,6 +228,10 @@ func (s *Service) Confirm(ctx context.Context, connectionID string) (commander.C
 			return detail, err
 		}
 		if err := s.commander.PutConnectionLabel(ctx, connectionID, GroupLabel, group); err != nil {
+			return detail, err
+		}
+		delete(metadata, "pending_group_id")
+		if err := s.commander.UpdateConnection(ctx, connectionID, metadata); err != nil {
 			return detail, err
 		}
 	}
@@ -254,6 +257,12 @@ func (s *Service) deleteOne(ctx context.Context, cfToken, id string, requireCrea
 		return errors.New("refusing to delete a connection not created for a group")
 	}
 	account, tokenID := stringValue(m["accountId"]), stringValue(m["token_id"])
+	if tokenID == "" && account != "" {
+		tokenID, err = s.cloudflare.FindCredential(ctx, cfToken, account, id)
+		if err != nil {
+			return err
+		}
+	}
 	if tokenID != "" {
 		if err := s.cloudflare.RevokeCredential(ctx, cfToken, account, tokenID, id); err != nil {
 			delete(m, "secret_keys")
@@ -261,6 +270,11 @@ func (s *Service) deleteOne(ctx context.Context, cfToken, id string, requireCrea
 			_ = s.commander.UpdateConnection(ctx, id, m)
 			return err
 		}
+	}
+	delete(m, "secret_keys")
+	m["status"] = "revoked"
+	if err := s.commander.UpdateConnection(ctx, id, m); err != nil {
+		return err
 	}
 	return s.commander.DeleteConnection(ctx, id)
 }
@@ -336,11 +350,20 @@ func (s *Service) Unlink(ctx context.Context, resourceID, connectionID, group st
 	if err != nil {
 		return d, err
 	}
-	if d.Connection.Resource != resourceID || d.Connection.Labels[GroupLabel] != group || d.Connection.Labels[OriginLabel] != OriginImported {
+	if d.Connection.Resource != resourceID {
+		return d, errors.New("connection is attached to another resource")
+	}
+	groupLabel, originLabel := d.Connection.Labels[GroupLabel], d.Connection.Labels[OriginLabel]
+	if groupLabel == "" && originLabel == "" {
+		return d, nil
+	}
+	if groupLabel != group && !(groupLabel == "" && originLabel == OriginImported) || originLabel != OriginImported {
 		return d, errors.New("connection is not an imported member of this group")
 	}
-	if err := s.commander.DeleteConnectionLabel(ctx, connectionID, GroupLabel); err != nil {
-		return d, err
+	if groupLabel != "" {
+		if err := s.commander.DeleteConnectionLabel(ctx, connectionID, GroupLabel); err != nil {
+			return d, err
+		}
 	}
 	if err := s.commander.DeleteConnectionLabel(ctx, connectionID, OriginLabel); err != nil {
 		return d, err
@@ -353,6 +376,11 @@ func (s *Service) DeleteGroup(ctx context.Context, cfToken string, ids []string)
 	for _, id := range ids {
 		d, err := s.commander.GetConnection(ctx, id)
 		if err != nil {
+			var apiErr *commander.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
+				done = append(done, id)
+				continue
+			}
 			return done, err
 		}
 		if _, err = s.ownedResource(ctx, d.Connection.Resource); err != nil {
@@ -402,19 +430,35 @@ func (s *Service) PrepareTeardown(ctx context.Context, cfToken string) ([]string
 		if r.Manager != s.managerID || r.Type != ResourceType {
 			return nil, errors.New("resource ownership check failed")
 		}
-		connections, err := s.commander.ListConnections(ctx, r.ID)
-		if err != nil {
-			return nil, err
-		}
-		for _, c := range connections {
-			d, err := s.commander.GetConnection(ctx, c.ID)
+		for {
+			connections, err := s.commander.ListConnections(ctx, r.ID)
 			if err != nil {
 				return nil, err
 			}
-			if _, ok := d.Config.Metadata["token_id"]; ok {
-				if err := s.deleteOne(ctx, cfToken, c.ID, false); err != nil {
+			processed := false
+			for _, c := range connections {
+				d, err := s.commander.GetConnection(ctx, c.ID)
+				if err != nil {
 					return nil, err
 				}
+				if stringValue(d.Config.Metadata["status"]) == "pending" {
+					account := stringValue(d.Config.Metadata["accountId"])
+					if err := s.reconcilePending(ctx, cfToken, r.ID, d.Connection.Manager, account); err != nil {
+						return nil, err
+					}
+					processed = true
+				} else if _, ok := d.Config.Metadata["token_id"]; ok {
+					if err := s.deleteOne(ctx, cfToken, c.ID, false); err != nil {
+						return nil, err
+					}
+					processed = true
+				}
+				if processed {
+					break
+				}
+			}
+			if !processed {
+				break
 			}
 		}
 		remaining, err := s.commander.ListConnections(ctx, r.ID)
