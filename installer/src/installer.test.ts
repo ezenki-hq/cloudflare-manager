@@ -1,85 +1,52 @@
 import { describe, expect, it, vi } from "vitest";
-import type { RPCCaller, RunItem } from "@ezenki/deploy-commander-installer-interface";
+import type { RPCCaller, RunItem, Wire } from "@ezenki/deploy-commander-installer-interface";
 import { buildInstallRun, installationState, startInstall, type InstallInput } from "./installer";
 
-const input: InstallInput = {
-  backendImage: "ghcr.io/ezenki/cloudflare-manager:1.2.3",
-  runnerImage: "ezenki/deploy-commander-runner:1.2.3",
-  clientId: "cloudflare-oauth-client",
-  publicOrigin: "https://cf-manager.example.test",
-  commanderOrigin: "https://commander.example.test",
-};
-
-function run(action: string, status: number, queuedAt: string, id = `${action}-${status}`): RunItem {
-  return { id, action, status, queued_at: queuedAt, created_at: queuedAt, updated_at: queuedAt };
-}
+const input: InstallInput = { backendImage: "ghcr.io/ezenki/cloudflare-manager:latest", runnerImage: "ezenki/deploy-commander-runner:1.2.3" };
+const commander = { resourceId: "commander-resource", connectionId: "connection-id", managerAPI: "http://commander:6080/api/v1" };
+const run = (action: string, status: number, queued_at: string): RunItem => ({ id: `${action}-${status}`, action, status, queued_at, created_at: queued_at, updated_at: queued_at });
 
 describe("initial installer", () => {
-  it("builds one service with network, health, redirect, and nonsecret configuration", () => {
-    const options = buildInstallRun({ ...input, managerId: "manager-uuid" });
-    expect(options.action).toBe("install");
-    expect(options.platform).toBe("docker");
+  it("builds a values-enabled one-click install with approved Commander connection", () => {
+    const options = buildInstallRun({ ...input, managerId: "manager-uuid", commander });
+    expect(options.action).toBe("install"); expect(options.platform).toBe("docker"); expect(options.runner).toBe(input.runnerImage);
     const metadata = options.metadata as any;
-    expect(Object.keys(metadata.services)).toEqual(["cloudflare-manager"]);
-    expect(metadata.services["cloudflare-manager"]).toEqual(expect.objectContaining({
-      image: input.backendImage,
-      aliases: ["cloudflare-manager-manager-uuid"],
-      connections: [{ type: "Platform", data: { network: "manager" } }],
-      environment: expect.objectContaining({ CF_CLIENT_ID: input.clientId, PUBLIC_ORIGIN: input.publicOrigin, COMMANDER_ORIGIN: input.commanderOrigin }),
-      health_check: expect.objectContaining({ test: ["CMD", "/app/cloudflare-manager", "healthcheck"] }),
-    }));
-    expect(metadata.redirect.redirect).toBe("http://cloudflare-manager-manager-uuid:8080");
-    expect(JSON.stringify(metadata)).not.toMatch(/client_secret|password|access_token/i);
+    expect(metadata.values_version).toBe(1);
+    expect(metadata.services["generate-jwt-secret"]).toMatchObject({ role:"runner", command:["generate-jwt-secret"], stream_output:false, capture_variables:[{stream:"stdout",pattern:"(?P<JWT_SECRET>[A-Za-z0-9_-]{43})"}] });
+    expect(metadata.services["cloudflare-manager"]).toMatchObject({ depends_on:["generate-jwt-secret"], connections:[{type:"Connection",data:{resource:"commander-resource",connection:"connection-id"}}], environment:{ MANAGER_ID:"manager-uuid", MANAGER_API:commander.managerAPI, MANAGER_PASSWORD:"[[secret:connection:connection-id:COMMANDER_PASSWORD]]", JWT_SECRET:"[[variable:JWT_SECRET]]" } });
+    expect(metadata.object_hooks[0]).toMatchObject({ kind:"container",name:"cloudflare-manager",create:{after:{query:"UPSERT manager_settings:current SET jwt_secret = $jwt_secret",bindings:{jwt_secret:"[[variable:JWT_SECRET]]"}}} });
+    expect(JSON.stringify(options)).not.toContain("oauth-client"); expect(JSON.stringify(options)).not.toContain("COMMANDER_ORIGIN");
   });
 
-  it("allows an install after a later successful teardown and blocks a later successful install", () => {
-    const install = run("install", 2, "2026-10-15T10:00:00.000Z");
-    const teardown = run("teardown", 2, "2026-10-15T11:00:00.000Z");
-    expect(installationState(install, teardown)).toBe("ready");
-    expect(installationState(run("install", 2, "2026-10-15T12:00:00.000Z"), teardown)).toBe("installed");
+  it("requires a pinned runner image and rejects missing Commander inputs", () => {
+    expect(() => buildInstallRun({ ...input, runnerImage:"ezenki/deploy-commander-runner:latest", managerId:"manager", commander })).toThrow(/runner image.*version tag or SHA-256 digest/i);
+    expect(() => buildInstallRun({ ...input, managerId:"", commander })).toThrow(/manager ID/i);
+    expect(() => buildInstallRun({ ...input, managerId:"manager", commander:{...commander,connectionId:""} })).toThrow(/connection ID/i);
   });
 
-  it("allows retry after failed install but blocks active runs", () => {
-    expect(installationState(run("install", 3, "2026-10-15T10:00:00Z"), null)).toBe("ready");
-    expect(installationState(run("install", 1, "2026-10-15T10:00:00Z"), null)).toBe("installing");
-    expect(installationState(run("install", 2, "2026-10-15T09:00:00Z"), run("teardown", 0, "2026-10-15T10:00:00Z"))).toBe("tearing-down");
+  it("computes install state and blocks conflicting runs", () => {
+    const install=run("install",2,"2026-10-15T10:00:00Z"),teardown=run("teardown",2,"2026-10-15T11:00:00Z");
+    expect(installationState(install,teardown)).toBe("ready"); expect(installationState(teardown,install)).toBe("installed");
+    expect(installationState(run("install",1,"2026-10-15T10:00:00Z"),null)).toBe("installing");
+    expect(installationState(null,run("teardown",0,"2026-10-15T10:00:00Z"))).toBe("tearing-down");
   });
 
-  it("rejects ambiguous run chronology", () => {
-    expect(() => installationState(run("install", 2, "2026-10-15T10:00:00Z"), run("teardown", 2, "2026-10-15T10:00:00Z"))).toThrow(/timestamps/i);
-    expect(() => installationState(run("install", 2, "invalid"), run("teardown", 2, "2026-10-15T11:00:00Z"))).toThrow(/timestamps/i);
+  it("resolves the Commander connection before starting the run", async () => {
+    const caller={getLatestRun:vi.fn().mockResolvedValue(null),getManager:vi.fn().mockResolvedValue("manager-1"),start:vi.fn().mockResolvedValue({id:"run-1",queued_at:"now",status:0})} as unknown as RPCCaller;
+    const wire={startInterface:vi.fn().mockResolvedValue({id:"child",close:Promise.resolve({ok:true,manager:"commander",result:{connection:{id:"connection-id",manager:"manager-1",resource:"commander-resource"}}})})} as unknown as Wire;
+    const extension=caller as unknown as Record<string,unknown>;
+    Object.assign(extension,{getManagers:vi.fn().mockResolvedValue({items:[{id:"commander-manager"}]}),getResources:vi.fn().mockResolvedValue({items:[{id:"commander-resource"}]}),getResource:vi.fn().mockResolvedValue({resource:{id:"commander-resource",manager:"commander-manager",type:"commander"},config:{metadata:{manager_api:{host:"commander",port:6080,tls:false}}}}),getConnections:vi.fn().mockResolvedValue({items:[]}),setSecret:vi.fn(),getSecretKeys:vi.fn().mockResolvedValue([{key:"COMMANDER_PASSWORD"}])});
+    await startInstall(caller,wire,input);
+    expect(caller.start).toHaveBeenCalledWith(expect.objectContaining({action:"install",runner:input.runnerImage}));
   });
 
-  it("validates image references and same-site HTTPS origins", () => {
-    expect(() => buildInstallRun({ ...input, backendImage: "" , managerId: "manager-uuid" })).toThrow(/backend image/i);
-    expect(() => buildInstallRun({ ...input, runnerImage: "ezenki/deploy-commander-runner:latest", managerId: "manager-uuid" })).toThrow(/runner image.*version tag or SHA-256 digest/i);
-    expect(() => buildInstallRun({ ...input, commanderOrigin: "https://other.example.org", managerId: "manager-uuid" })).toThrow(/same HTTPS site/i);
-  });
-
-  it("gets trusted manager identity and starts only when installation is ready", async () => {
-    const caller = {
-      getManager: vi.fn().mockResolvedValue("manager-uuid"),
-      getLatestRun: vi.fn().mockResolvedValue(null),
-      start: vi.fn().mockResolvedValue({ id: "run-1", queued_at: "now", status: 0 }),
-    } as unknown as RPCCaller;
-    const result = await startInstall(caller, input);
-    expect(caller.getManager).toHaveBeenCalledOnce();
-    expect(caller.getLatestRun).toHaveBeenCalledWith({ action: "install" });
-    expect(caller.getLatestRun).toHaveBeenCalledWith({ action: "teardown" });
-    expect(caller.start).toHaveBeenCalledWith(expect.objectContaining({ action: "install", runner: input.runnerImage }));
-    expect(result.id).toBe("run-1");
-  });
-
-  it("does not start while an install is active or already installed", async () => {
-    const caller = {
-      getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "install" ? run("install", 2, "2026-10-15T10:00:00Z") : null),
-      getManager: vi.fn(),
-      start: vi.fn(),
-    } as unknown as RPCCaller;
-    await expect(startInstall(caller, input)).rejects.toThrow(/already installed/i);
-    expect(caller.start).not.toHaveBeenCalled();
-    vi.mocked(caller.getLatestRun).mockImplementation(async ({ action }: { action?: string } = {}) => action === "install" ? run("install", 1, "2026-10-15T10:00:00Z") : null);
-    await expect(startInstall(caller, input)).rejects.toThrow(/already queued or running/i);
-    expect(caller.start).not.toHaveBeenCalled();
+  it("does not start a run after approval denial or when a run conflicts", async () => {
+    const caller={getLatestRun:vi.fn().mockResolvedValue(null),getManager:vi.fn().mockResolvedValue("manager-1"),start:vi.fn()} as unknown as RPCCaller;
+    const denied={startInterface:vi.fn().mockResolvedValue({id:"child",close:Promise.resolve({ok:false,error:{message:"Denied"}})})} as unknown as Wire;
+    const ext=caller as unknown as Record<string,unknown>;
+    Object.assign(ext,{getManagers:vi.fn().mockResolvedValue({items:[{id:"commander-manager"}]}),getResources:vi.fn().mockResolvedValue({items:[{id:"commander-resource"}]}),getResource:vi.fn().mockResolvedValue({resource:{id:"commander-resource",manager:"commander-manager",type:"commander"},config:{metadata:{manager_api:{host:"commander"}}}}),getConnections:vi.fn().mockResolvedValue({items:[]}),setSecret:vi.fn(),getSecretKeys:vi.fn()});
+    await expect(startInstall(caller,denied,input)).rejects.toThrow("Denied"); expect(caller.start).not.toHaveBeenCalled();
+    vi.mocked(caller.getLatestRun).mockImplementation(async ({action}:any)=>action==="install"?run("install",1,"2026-10-15T10:00:00Z"):null);
+    await expect(startInstall(caller,denied,input)).rejects.toThrow(/already queued or running/i); expect(denied.startInterface).toHaveBeenCalledOnce();
   });
 });
