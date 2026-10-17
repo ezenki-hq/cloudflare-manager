@@ -167,11 +167,15 @@ assuming every failure is an `Error`.
 The manager frontend reads approval metadata and trusted calling-manager
 context, finds and validates the Commander resource, checks for an existing
 connection, then uses the manager-supplied password or generates an editable
-random password, obtains a short-lived Commander token, creates manager
-credentials, creates the connection, and closes the child. Denial is `403`;
+random password. On approval it creates a connection without the password in
+its metadata, stores the password on that connection as the
+`COMMANDER_PASSWORD` secret, creates the manager login credential, and closes
+the child. If secret or login creation fails, it attempts to delete the new
+connection, which also removes its connection secrets. Denial is `403`;
 duplicate manager/resource connections are `409`; malformed resource data is
 rejected before credential creation (typically `422`). Backend authorization
-remains authoritative.
+remains authoritative. This flow applies to new connections; it does not
+migrate credentials from existing connection metadata.
 
 ### Approval result and secure handoff
 
@@ -195,14 +199,14 @@ type ConnectionResult = {
 };
 ```
 
-The username is the requesting manager UUID. The resolved password (generated
-by Commander when it
-was not supplied by the manager, or the manager-supplied value otherwise) is
-included in the returned connection configuration and is a secret; Commander
-stores only its bcrypt hash. Treat the configuration as a
-secret: deliver it over a manager-owned secure channel, never log it, put it in
-interface metadata, bake it into an image, or recover it through run-scoped
-connection routes. Use `result.connection.manager` and `.resource` for
+The username is the requesting manager UUID. The resolved password is stored
+as the connection secret `COMMANDER_PASSWORD`; it is not included in the
+connection metadata or the approval result. Commander stores a bcrypt hash
+for Basic authentication. An authorized active runner can retrieve the
+connection secret with
+`GET /v1/secrets/connection/<connection-id>/value?key=COMMANDER_PASSWORD`.
+The manager recorded on the connection can read its secret when the run
+belongs to that manager. Use `result.connection.manager` and `.resource` for
 ownership; the top-level close `manager` identifies the resource context.
 
 The approval bridge passes this flat metadata object to connection creation.
@@ -435,6 +439,15 @@ each request. An omitted permission on manager creation means no grants.
 
 Credential values and selectors are never included in responses. Keep them out
 of URLs, logs, and publish configuration files.
+
+Commander connection approval stores the requesting manager's Basic password
+as the `COMMANDER_PASSWORD` secret owned by the new connection. Only an
+authorized active runner can retrieve the value:
+
+```http
+GET /v1/secrets/connection/<connection-uuid>/value?key=COMMANDER_PASSWORD
+Authorization: Bearer <active-run-token>
+```
 
 ### Manager, runs, resources, and connections
 
@@ -842,11 +855,12 @@ attachments; Deploy Commander removes connections attached to the resource.
 Credentials, tokens, passwords, and connection configuration are secrets. Do
 not trust metadata for identity or use frontend checks as authorization. Use
 expected redirect schemes/hosts/ports. Commander and the registered agent are
-authoritative; there is no local fallback. User and connection creation are
-separate and user creation is not rolled back if connection creation fails.
-Duplicates conflict, deleting a connection does not revoke its password, and
-run dispatch failure records a failed run. Treat non-2xx responses as failures
-after redacting diagnostic bodies.
+authoritative; there is no local fallback. Connection creation, password
+secret storage, and manager login creation are separate operations. Approval
+deletes the new connection if secret storage or login creation fails; if that
+cleanup fails, remove the connection before retrying. Deleting a connection
+also deletes its connection secrets. Run dispatch failure records a failed
+run. Treat non-2xx responses as failures after redacting diagnostic bodies.
 
 Before shipping, verify: one stable wire; Commander manager UUID (not resource
 UUID); `action: "create-connection"`; awaited `child.close`; structured denial
