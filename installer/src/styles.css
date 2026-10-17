@@ -16,16 +16,19 @@ button, input { font: inherit; }
 .panel-heading p { margin: 6px 0 0; color: #6d7b77; font-size: 12px; }
 .status-pill { white-space: nowrap; border-radius: 999px; padding: 6px 10px; background: #eef2f0; color: #687873; font-size: 10px; font-weight: 750; }
 .status-installed { background: #e5f6ec; color: #177547; }
-.install-form { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; margin-top: 20px; }
-.install-form label { display: flex; min-width: 0; flex-direction: column; gap: 6px; color: #485a56; font-size: 11px; font-weight: 700; }
-.install-form input { height: 38px; padding: 0 11px; border: 1px solid #dce5e1; border-radius: 7px; color: #243632; outline: none; background: #fff; font-size: 12px; font-weight: 500; }
-.install-form input:focus { border-color: #67a28f; box-shadow: 0 0 0 3px rgba(67, 142, 115, .11); }
-.form-hint { grid-column: 1 / -1; margin: 0; color: #83908c; font-size: 10px; line-height: 1.5; }
-.form-hint code { color: #527268; }
+.install-form { display: flex; margin-top: 20px; }
+.oauth-panel { margin-top: 16px; }
+.settings-form { display: grid; gap: 8px; }
+.settings-form label { color: #485a56; font-size: 11px; font-weight: 700; }
+.settings-form input { width: 100%; height: 40px; padding: 0 11px; border: 1px solid #dce5e1; border-radius: 7px; color: #243632; outline: none; background: #fff; font-size: 13px; }
+.settings-form input:focus { border-color: #67a28f; box-shadow: 0 0 0 3px rgba(67, 142, 115, .11); }
+.settings-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 5px; }
 .button { justify-self: start; min-width: 150px; border: 0; border-radius: 8px; padding: 10px 14px; color: #fff; background: #e97920; font-size: 12px; font-weight: 700; cursor: pointer; }
 .button:disabled { cursor: not-allowed; opacity: .54; }
+.button-secondary { color: #23443a; background: #eaf2ee; }
+.button-link { display: inline-flex; align-items: center; text-decoration: none; color: #fff; background: #465f56; }
 .run-summary { margin: 0 0 16px; padding: 13px 15px; display: grid; gap: 5px; border: 1px solid #dfe8e4; border-radius: 9px; color: #52625c; font-size: 11px; }
 .run-summary p { margin: 2px 0 0; color: #75827d; }
 .inline-error { margin: 0 0 12px; color: #a54035; font-size: 12px; }
 footer { max-width: 790px; margin-top: 24px; color: #84918d; font-size: 10px; }
-@media (max-width: 620px) { .install-shell { padding: 0 16px 24px; } .brand { height: 68px; } .hero { padding: 32px 0 22px; } .panel { padding: 18px; } .install-form { grid-template-columns: 1fr; } }
+@media (max-width: 620px) { .install-shell { padding: 0 16px 24px; } .brand { height: 68px; } .hero { padding: 32px 0 22px; } .panel { padding: 18px; } }

@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { RunItem } from "@ezenki/deploy-commander-installer-interface";
 import { installationState, startInstall, type InstallInput, type InstallationState } from "./installer";
 import type { CommanderBridge } from "./commander";
 import { loadLatestInstall } from "./runHistory";
+import { loadClientID, saveClientID } from "./settings";
 
 interface InstallAppProps {
   bridge: CommanderBridge;
@@ -13,12 +14,13 @@ type InstallerUIState = InstallationState | "unavailable";
 
 export function InstallApp({ bridge, defaults }: InstallAppProps) {
   const { caller } = bridge;
-  const [values, setValues] = useState(defaults);
+  const [clientID, setClientID] = useState("");
   const [state, setState] = useState<InstallerUIState>("ready");
   const [installRun, setInstallRun] = useState<RunItem | null>(null);
   const [lastEvent, setLastEvent] = useState<{ seq: number; message: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [savingClientID, setSavingClientID] = useState(false);
   const [error, setError] = useState("");
   const currentRunId = useRef<string | null>(null);
   const locallyActiveRun = useRef<RunItem | null>(null);
@@ -55,6 +57,7 @@ export function InstallApp({ bridge, defaults }: InstallAppProps) {
   useEffect(() => {
     let alive = true;
     void refresh().catch((cause) => { if (alive) { setError(message(cause)); setState("unavailable"); } }).finally(() => { if (alive) setLoading(false); });
+    void loadClientID(caller).then((value) => { if (alive) setClientID(value); }).catch((cause) => { if (alive) setError(message(cause)); });
     const unsubscribe = bridge.onEvent((event) => {
       if (event.eventType === "run-start" && event.data.action === "install") {
         const queuedAt = event.data.created ?? new Date().toISOString();
@@ -76,13 +79,12 @@ export function InstallApp({ bridge, defaults }: InstallAppProps) {
     return () => { alive = false; refreshVersion.current += 1; unsubscribe(); bridge.wire.end(); };
   }, [bridge, refresh]);
 
-  const set = (key: keyof InstallInput) => (event: ChangeEvent<HTMLInputElement>) => setValues((old) => ({ ...old, [key]: event.target.value }));
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setBusy(true);
     setError("");
     try {
-      const started = await startInstall(caller, values);
+      const started = await startInstall(caller, bridge.wire, defaults);
       const run: RunItem = { action: "install", status: started.status, id: started.id, queued_at: started.queued_at, created_at: started.queued_at, updated_at: started.queued_at };
       locallyActiveRun.current = run;
       currentRunId.current = run.id;
@@ -95,21 +97,30 @@ export function InstallApp({ bridge, defaults }: InstallAppProps) {
     finally { setBusy(false); }
   };
 
+  const saveClient = async (event: FormEvent) => {
+    event.preventDefault(); setSavingClientID(true); setError("");
+    try { await saveClientID(caller, clientID); setClientID(clientID.trim()); }
+    catch (cause) { setError(message(cause)); }
+    finally { setSavingClientID(false); }
+  };
+
   return <main className="install-shell">
     <header className="brand"><span className="brand-mark">C</span><span>Cloudflare Manager<small>Deploy Commander installer</small></span></header>
     <section className="hero"><div className="eyebrow">OBJECT STORAGE · EDGE DELIVERY</div><h1>Install Cloudflare Manager</h1><p>Deploy the manager service once. After it is healthy, Deploy Commander opens the management interface.</p></section>
     <section className="panel" aria-labelledby="install-title">
-      <div className="panel-heading"><div><h2 id="install-title">Manager service</h2><p>Confirm the service, runner, and OAuth configuration before installation.</p></div><span className={`status-pill status-${state}`}>{loading ? "Loading status" : stateLabel(state)}</span></div>
+      <div className="panel-heading"><div><h2 id="install-title">Manager service</h2><p>Install the full stack manager in Deploy Commander.</p></div><span className={`status-pill status-${state}`}>{loading ? "Loading status" : stateLabel(state)}</span></div>
       {installRun && <div className="run-summary" aria-label="install run status"><strong>{statusLabel(installRun.status)}</strong><span>Run {installRun.id}</span><p aria-live="polite">{lastEvent?.message || "Waiting for the first install event…"}</p></div>}
       {error && <p className="inline-error" role="alert">{error}</p>}
       <form className="install-form" onSubmit={(event) => void submit(event)}>
-        <label>Backend image<input required value={values.backendImage} onChange={set("backendImage")} placeholder="ezenki/cloudflare-manager:latest" /></label>
-        <label>Runner image<input required value={values.runnerImage} onChange={set("runnerImage")} placeholder="ezenki/deploy-commander-runner:1.2.3" /></label>
-        <label>Cloudflare OAuth client ID<input required value={values.clientId} onChange={set("clientId")} autoComplete="off" /></label>
-        <label>Manager public origin<input required type="url" value={values.publicOrigin} onChange={set("publicOrigin")} placeholder="https://cf-manager.example.com" /></label>
-        <label>Deploy Commander origin<input required type="url" value={values.commanderOrigin} onChange={set("commanderOrigin")} placeholder="https://commander.example.com" /></label>
-        <p className="form-hint">Use HTTPS origins on the same site. Register the callback as <code>{values.publicOrigin.replace(/\/$/, "") || "https://manager.example.com"}/auth/callback</code>.</p>
-        <button className="button" disabled={loading || busy || state !== "ready"} type="submit">{busy ? "Starting install…" : state === "ready" ? "Start installation" : stateLabel(state)}</button>
+        <button className="button" disabled={loading || busy || state !== "ready"} type="submit">{busy ? "Starting install…" : state === "ready" ? "Install" : stateLabel(state)}</button>
+      </form>
+    </section>
+    <section className="panel oauth-panel" aria-labelledby="oauth-title">
+      <div className="panel-heading"><div><h2 id="oauth-title">Cloudflare OAuth</h2><p>Optional setup. Add a client ID now or later in the manager settings.</p></div></div>
+      <form className="settings-form" onSubmit={(event) => void saveClient(event)}>
+        <label htmlFor="client-id">OAuth client ID</label>
+        <input id="client-id" value={clientID} onChange={(event) => setClientID(event.target.value)} autoComplete="off" />
+        <div className="settings-actions"><button className="button button-secondary" type="submit" disabled={savingClientID}>{savingClientID ? "Saving…" : "Save client ID"}</button><a className="button button-link" href="https://dash.cloudflare.com/?to=/:account/oauth-clients" target="_blank" rel="noopener noreferrer">Create or get a client ID ↗</a></div>
       </form>
     </section>
     <footer>Cloudflare Manager · Published through Deploy Commander</footer>
