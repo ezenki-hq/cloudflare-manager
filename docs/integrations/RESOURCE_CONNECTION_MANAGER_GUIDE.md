@@ -52,6 +52,21 @@ Run the manager's normal resource-specific setup and validation. Create the conn
 
 Custom Deployer verifies the returned identity and then confirms the connection appears in a fresh group-label query. Do not return connection configuration or secrets in the interface result. A failed or cancelled workflow must return the standard failed interface response.
 
+### Declaring connection secret keys
+
+When a connection has secrets that a consuming deployment may use, include their key names in the live connection metadata under `secret_keys`:
+
+```json
+{
+  "metadata": {
+    "host": "db.internal",
+    "secret_keys": ["PASSWORD", "REPLICATION_TOKEN"]
+  }
+}
+```
+
+This is a declaration of available keys only. Never include secret values in connection metadata or the interface result. Keep the list in sync when the owning manager adds or removes connection secrets. Custom Deployer uses the declared key name to create a runner secret reference; the runner reads the value through Deploy Commander's authorized secret API. In the default form, secret bindings are supported for command arguments, environment values, and health-check test strings.
+
 ## Link an existing visible connection
 
 When a user imports an existing unlinked connection, Custom Deployer opens that resource's owning manager and sends:

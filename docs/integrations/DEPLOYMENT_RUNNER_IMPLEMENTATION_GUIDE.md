@@ -315,15 +315,25 @@ backslashes (`"\\\\[[variable:NAME]]"`) leave one backslash before
 expansion. Escaping applies to secret and variable markers. Substitution is
 one pass.
 
-The runner expands service and inline `fail_runner` command/environment
-values, regular-service `health_check.test`, chronjob command/environment
-values, referenced config-map file contents, and recursively within database-
-hook binding values. Hook query strings and binding keys remain literal.
-Names, images, labels, mount and volume names, connection descriptors,
+All four secret reference forms above, including
+`[[secret:connection:CONNECTION_UUID:KEY]]`, work in every supported value
+position. With `values_version: 1`, the runner expands:
+
+- Service and inline `fail_runner` command arguments and environment values.
+- Regular-service `health_check.test` elements.
+- Chronjob service command arguments and environment values.
+- File contents of config maps referenced by a service or chronjob.
+- String values nested recursively in database-hook bindings.
+- Service and inline `fail_runner` `save_secrets[].value` fields.
+
+Connection secrets are not limited to command, environment, and health-check
+values. Hook query strings and binding keys remain literal. Names, images,
+labels, mount paths and volume names, connection descriptors,
 resource/connection metadata, redirects, and other arbitrary JSON remain
-literal. Unused config maps are not parsed or fetched. A normal run fetches all
-unique required secrets before Docker mutation and resolves variables when
-their dependent services and hooks run.
+literal. A literal mount path does not prevent interpolation in the contents
+of a config-map file projected at that path. Unused config maps are not parsed
+or fetched. A normal run fetches all unique required secrets before Docker
+mutation and resolves variables when their dependent services and hooks run.
 
 A run secret may appear in any number of fields and may be copied to any number
 of newly created owners. Add the exact run-secret key to
