@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Account, BackendAPI, Bucket, BucketPage, Domain, Zone } from "./api";
 import type { CommanderBridge } from "./commander";
-import { reloadCommanderHost } from "./hostNavigation";
+import { reloadCurrentInterface } from "./hostNavigation";
 import { getCurrentManagerRedirect } from "./managerRedirect";
 import { provisionConnection, revokeConnection } from "./connections";
 import { BucketDetail } from "./components/BucketDetail";
@@ -13,12 +13,13 @@ interface AppProps {
   bridge: CommanderBridge;
   api: BackendAPI;
   backendOrigin: string;
-  reloadHost?: typeof reloadCommanderHost;
+  reloadPage?: () => void;
 }
 
 type AuthState = "checking" | "signed-out" | "signed-in" | "blocked" | "unavailable";
+const reloadWindow = () => window.location.reload();
 
-export function App({ bridge, api, backendOrigin, reloadHost = reloadCommanderHost }: AppProps) {
+export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: AppProps) {
   const { caller } = bridge;
   const popupRef = useRef<Window | null>(null);
   const bucketListRef = useRef<Bucket[]>([]);
@@ -88,19 +89,19 @@ export function App({ bridge, api, backendOrigin, reloadHost = reloadCommanderHo
     if (install?.status === 2) {
       const managerId = await caller.getManager().catch(() => "");
       const redirect = await getCurrentManagerRedirect(caller);
-      if (managerId && redirect === "set" && !reloadHost(managerId, "install", install.id)) setReloadBlocked(true);
+        if (managerId && redirect === "set" && !reloadCurrentInterface(managerId, "install", install.id, reloadPage)) setReloadBlocked(true);
     }
     if (teardown && isActive(teardown.run.status)) {
       const state = await getCurrentManagerRedirect(caller);
       if (state === "cleared") {
         const managerId = await caller.getManager().catch(() => "");
-        if (managerId && !reloadHost(managerId, "teardown", teardown.run.id)) setReloadBlocked(true);
+        if (managerId && !reloadCurrentInterface(managerId, "teardown", teardown.run.id, reloadPage)) setReloadBlocked(true);
       }
     } else if (teardown?.run.status === 2) {
       const managerId = await caller.getManager().catch(() => "");
-      if (managerId && !reloadHost(managerId, "teardown", teardown.run.id)) setReloadBlocked(true);
+      if (managerId && !reloadCurrentInterface(managerId, "teardown", teardown.run.id, reloadPage)) setReloadBlocked(true);
     }
-  }, [caller, refreshTeardown, reloadHost]);
+  }, [caller, refreshTeardown, reloadPage]);
 
   const loadAccounts = useCallback(async () => {
     try {
@@ -365,7 +366,7 @@ export function App({ bridge, api, backendOrigin, reloadHost = reloadCommanderHo
       <div className="topbar-actions"><span className={`status-pill ${auth === "signed-in" ? "status-live" : "status-neutral"}`}>{auth === "signed-in" ? "Cloudflare connected" : "Cloudflare sign-in needed"}</span><button className="text-button text-danger" disabled={teardownActive || installActive || teardownHistory?.run.status === 2 && !(installRun && installRun.queued_at > teardownHistory.run.queued_at)} onClick={teardown}>Tear down</button></div>
     </header>
 
-    {reloadBlocked && <div className="page-error" role="alert"><span>Commander did not reload automatically.</span><button className="button button-secondary" onClick={() => window.parent.location.reload()}>Reload Commander</button></div>}
+    {reloadBlocked && <div className="page-error" role="alert"><span>The manager did not reload automatically.</span><button className="button button-secondary" onClick={reloadPage}>Reload interface</button></div>}
 
     <section className="hero">
       <div className="hero-copy"><div className="eyebrow">OBJECT STORAGE · EDGE DELIVERY</div><h1>R2 storage, under control.</h1><p>Manage Cloudflare buckets, connect custom domains, and issue scoped credentials for the applications that use them.</p></div>

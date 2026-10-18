@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RPCCaller, RunItem } from "@ezenki/deploy-commander-installer-interface";
 import type { CommanderBridge, InterfaceEvent } from "./commander";
 import { InstallApp } from "./InstallApp";
-import { reloadCommanderHost } from "./hostNavigation";
 
 const defaults = {
   backendImage: "ghcr.io/ezenki/cloudflare-manager:1.2.3",
@@ -59,8 +58,8 @@ describe("installer interface", () => {
     const reload = vi.fn();
     const done = { ...install, status: 2 };
     const harness = setup({ initialRun: done });
-    const reloadHost = (managerId: string, action: "install" | "teardown", runId: string) => reloadCommanderHost(managerId, action, runId, reload);
-    render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadHost={reloadHost} />);
+    const reloadPage = reload;
+    render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadPage={reloadPage} />);
     await screen.findByText("Done");
     await waitFor(() => expect(reload).toHaveBeenCalledOnce());
   });
@@ -69,8 +68,8 @@ describe("installer interface", () => {
     sessionStorage.clear();
     const reload = vi.fn();
     const harness = setup();
-    const reloadHost = (managerId: string, action: "install" | "teardown", runId: string) => reloadCommanderHost(managerId, action, runId, reload);
-    render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadHost={reloadHost} />);
+    const reloadPage = reload;
+    render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadPage={reloadPage} />);
     await screen.findByText("Running");
     harness.setRun({ ...install, status: 2 });
     fireEvent(window, new Event("focus"));
@@ -84,7 +83,7 @@ describe("installer interface", () => {
     const failed = { ...install, status: 3 };
     const harness = setup({ initialRun: failed });
     const failedReload = vi.fn();
-    const first = render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadHost={failedReload} />);
+    const first = render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadPage={failedReload} />);
     await screen.findByText("Failed");
     expect(failedReload).not.toHaveBeenCalled();
     first.unmount();
@@ -92,17 +91,18 @@ describe("installer interface", () => {
     sessionStorage.clear();
     const reload = vi.fn().mockImplementationOnce(() => { throw new Error("blocked"); });
     const doneHarness = setup({ initialRun: { ...failed, status: 2 } });
-    const reloadHost = (managerId: string, action: "install" | "teardown", runId: string) => reloadCommanderHost(managerId, action, runId, reload);
-    render(<InstallApp bridge={doneHarness.bridge} defaults={defaults} reloadHost={reloadHost} />);
-    expect(await screen.findByRole("button", { name: "Reload Commander" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Reload Commander" }));
+    const reloadPage = reload;
+    render(<InstallApp bridge={doneHarness.bridge} defaults={defaults} reloadPage={reloadPage} />);
+    expect(await screen.findByRole("button", { name: "Reload interface" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reload interface" }));
+    expect(reload).toHaveBeenCalledTimes(2);
   });
 
   it("restores teardown status and event, then enables Install only after teardown succeeds", async () => {
     const teardown = { ...install, id: "teardown-1", action: "teardown", status: 1, queued_at: "2026-10-16T11:00:00Z" } as RunItem;
     const harness = setup({ initialRun: { ...install, status: 2 }, initialTeardown: teardown });
-    const reloadHost = vi.fn().mockReturnValue(true);
-    render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadHost={reloadHost} />);
+    const reloadPage = vi.fn().mockReturnValue(true);
+    render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadPage={reloadPage} />);
     expect(await screen.findByLabelText("teardown run status")).toBeTruthy();
     expect(screen.getByLabelText("teardown run status").textContent).toContain("Install runner started");
     expect((screen.getByRole("button", { name: "Teardown active" }) as HTMLButtonElement).disabled).toBe(true);

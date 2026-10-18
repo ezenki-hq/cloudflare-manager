@@ -1,10 +1,10 @@
 export type HostAction = "install" | "teardown";
 
-export function reloadCommanderHost(
+export function reloadCurrentInterface(
   managerId: string,
   action: HostAction,
   runId: string,
-  reload: () => void = () => window.parent.location.reload(),
+  reload: () => void = () => window.location.reload(),
 ): boolean {
   const key = `cloudflare-manager:host-reload:${managerId}:${action}:${runId}`;
   try {

@@ -3,20 +3,21 @@ import type { RunItem } from "@ezenki/deploy-commander-installer-interface";
 import { inspectCommanderConnection, resolveCommanderConnection, type CommanderConnection } from "./commanderConnection";
 import { installationState, startInstall, type InstallInput, type InstallationState } from "./installer";
 import type { CommanderBridge } from "./commander";
-import { reloadCommanderHost } from "./hostNavigation";
+import { reloadCurrentInterface } from "./hostNavigation";
 import { loadLatestInstall, loadLatestTeardown } from "./runHistory";
 import { loadClientID, saveClientID } from "./settings";
 
 interface InstallAppProps {
   bridge: CommanderBridge;
   defaults: InstallInput;
-  reloadHost?: typeof reloadCommanderHost;
+  reloadPage?: () => void;
 }
 
 type InstallerUIState = InstallationState | "unavailable";
 type ConnectionUIState = "checking" | "missing" | "ready" | "error";
+const reloadWindow = () => window.location.reload();
 
-export function InstallApp({ bridge, defaults, reloadHost = reloadCommanderHost }: InstallAppProps) {
+export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: InstallAppProps) {
   const { caller } = bridge;
   const [clientID, setClientID] = useState("");
   const [commanderConnection, setCommanderConnection] = useState<CommanderConnection | null>(null);
@@ -75,9 +76,9 @@ export function InstallApp({ bridge, defaults, reloadHost = reloadCommanderHost 
     }
     if (snapshot?.run.status === 2 && lifecycleState === "installed") {
       const managerId = await caller.getManager().catch(() => "");
-      if (managerId && !reloadHost(managerId, "install", snapshot.run.id)) setReloadBlocked(true);
+      if (managerId && !reloadCurrentInterface(managerId, "install", snapshot.run.id, reloadPage)) setReloadBlocked(true);
     }
-  }, [caller, reloadHost]);
+  }, [caller, reloadPage]);
 
   useEffect(() => {
     let alive = true;
@@ -198,7 +199,7 @@ export function InstallApp({ bridge, defaults, reloadHost = reloadCommanderHost 
       <div className="panel-heading"><div><h2 id="install-title">Manager service</h2><p>Install the full stack manager in Deploy Commander.</p></div><span className={`status-pill status-${state}`}>{loading ? "Loading status" : stateLabel(state)}</span></div>
       {installRun && <div className="run-summary" aria-label="install run status"><strong>{statusLabel(installRun.status)}</strong><span>Run {installRun.id}</span><p aria-live="polite">{lastEvent?.message || "Waiting for the first install event…"}</p></div>}
       {teardownRun && <div className="run-summary" aria-label="teardown run status"><strong>{statusLabel(teardownRun.status)}</strong><span>Teardown run {teardownRun.id}</span><p aria-live="polite">{teardownEvent?.message || "Waiting for the first teardown event…"}</p></div>}
-      {reloadBlocked && <p role="alert" className="inline-error">Commander did not reload automatically. <button className="button button-secondary" type="button" onClick={() => window.parent.location.reload()}>Reload Commander</button></p>}
+      {reloadBlocked && <p role="alert" className="inline-error">The installer did not reload automatically. <button className="button button-secondary" type="button" onClick={reloadPage}>Reload interface</button></p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
       <form className="install-form" onSubmit={(event) => void submit(event)}>
         <button className="button" disabled={loading || busy || state !== "ready" || connectionState !== "ready" || !commanderConnection} type="submit">{busy ? "Starting install…" : state === "ready" ? "Install" : stateLabel(state)}</button>
