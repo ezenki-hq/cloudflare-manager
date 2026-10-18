@@ -23,7 +23,6 @@ export function App({ bridge, api, backendOrigin, reloadHost = reloadCommanderHo
   const popupRef = useRef<Window | null>(null);
   const bucketListRef = useRef<Bucket[]>([]);
   const teardownRefreshVersion = useRef(0);
-  const activeInstallIds = useRef(new Set<string>());
   const [auth, setAuth] = useState<AuthState>("checking");
   const [authError, setAuthError] = useState("");
   const [clientID, setClientID] = useState("");
@@ -86,11 +85,10 @@ export function App({ bridge, api, backendOrigin, reloadHost = reloadCommanderHo
   const refreshLifecycle = useCallback(async () => {
     const [teardown, install] = await Promise.all([refreshTeardown(), Promise.resolve(caller.getLatestRun({ action: "install" })).catch(() => null)]);
     if (install) setInstallRun((current) => !current || current.id !== install.id || install.status >= current.status ? install : current);
-    if (install && isActive(install.status)) activeInstallIds.current.add(install.id);
-    if (install?.status === 2 && activeInstallIds.current.has(install.id)) {
-      activeInstallIds.current.delete(install.id);
+    if (install?.status === 2) {
       const managerId = await caller.getManager().catch(() => "");
-      if (managerId && !reloadHost(managerId, "install", install.id)) setReloadBlocked(true);
+      const redirect = await getCurrentManagerRedirect(caller);
+      if (managerId && redirect === "set" && !reloadHost(managerId, "install", install.id)) setReloadBlocked(true);
     }
     if (teardown && isActive(teardown.run.status)) {
       const state = await getCurrentManagerRedirect(caller);
@@ -160,7 +158,6 @@ export function App({ bridge, api, backendOrigin, reloadHost = reloadCommanderHo
 
   useEffect(() => bridge.onEvent((event) => {
     if (event.eventType === "run-start" && event.data.action === "install") {
-      activeInstallIds.current.add(event.data.id);
       void refreshLifecycle();
       return;
     }

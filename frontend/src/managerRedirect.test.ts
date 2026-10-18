@@ -15,6 +15,7 @@ describe("getCurrentManagerRedirect", () => {
   });
   it("does not treat another manager's empty redirect as ours", async () => expect(await getCurrentManagerRedirect(caller([{ items: [{ id: "other", redirect: "" }], count: 1 }]))).toBe("unknown"));
   it("treats omitted redirect as unknown", async () => expect(await getCurrentManagerRedirect(caller([{ items: [{ id: "self" }], count: 1 }]))).toBe("unknown"));
+  it("treats a present but undefined redirect as unknown", async () => expect(await getCurrentManagerRedirect(caller([{ items: [{ id: "self", redirect: undefined }], count: 1 }]))).toBe("unknown"));
   it.each([null, ""])("recognizes explicit cleared redirect %s", async (redirect) => expect(await getCurrentManagerRedirect(caller([{ items: [{ id: "self", redirect }], count: 1 }]))).toBe("cleared"));
   it("returns unknown when Commander fails", async () => {
     const rpc = caller([]);

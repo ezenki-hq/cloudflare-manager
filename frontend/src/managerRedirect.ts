@@ -10,7 +10,7 @@ export async function getCurrentManagerRedirect(caller: RPCCaller): Promise<Mana
       const manager = page.items.find((item) => item.id === managerId);
       if (manager) {
         if (!("redirect" in manager)) return "unknown";
-        return manager.redirect == null || manager.redirect === "" ? "cleared" : "set";
+        return manager.redirect === null || manager.redirect === "" ? "cleared" : manager.redirect === undefined ? "unknown" : "set";
       }
       if (page.items.length < 100 || offset + page.items.length >= page.count) break;
     }
