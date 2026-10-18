@@ -18,6 +18,6 @@ export function reloadCommanderHost(
       return false;
     }
   } catch {
-    try { reload(); return true; } catch { return false; }
+    return false;
   }
 }
