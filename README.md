@@ -1,6 +1,6 @@
 # Cloudflare Manager for Deploy Commander
 
-A Deploy Commander manager for Cloudflare R2. This repository contains two independent React projects: `installer/` approves the Commander connection and starts or monitors installation runs, while `frontend/` is the management UI bundled into the Go service image. The Go service owns Cloudflare OAuth, Cloudflare API calls, and R2 resource and connection workflows.
+A Deploy Commander manager for Cloudflare R2. This repository contains two independent React projects: `installer/` approves the Commander connection, starts installation, and shows the current action state; detailed runs live in Deploy Commander's runs section. `frontend/` is the management UI bundled into the Go service image. The Go service owns Cloudflare OAuth, Cloudflare API calls, and R2 resource and connection workflows.
 
 Cloudflare user authorization lives in a short-lived `Secure`, `HttpOnly` cookie. It is not stored in Deploy Commander, refreshed, or persisted by this service. Application S3 credentials are separate account-owned Cloudflare tokens scoped to one bucket; their access key and secret are stored in the requesting application's Deploy Commander connection secrets.
 
@@ -64,13 +64,13 @@ The installer defaults to `latest` tags for both images. It accepts tagged image
 
 ## Install and operate
 
-Open the published installer inside Deploy Commander, create and approve the Commander connection if needed, then click Install. It displays the run status and latest structured install event, including after a reload. The runner configures the service with its approved Commander connection, waits for the `/healthz` health check, and sets the redirect to the healthy service. After a successful install, the Commander host reloads into the manager automatically.
+Open the published installer inside Deploy Commander, create and approve the Commander connection if needed, then click Install. The installer shows setup guidance and the current action state; detailed runs are available in Deploy Commander's separate runs section. The runner configures the service with its approved Commander connection, waits for the `/healthz` health check, and sets the redirect to the healthy service. After a successful install, the installer interface reloads into the manager automatically.
 
 Use an HTTPS custom hostname for the manager. The OAuth callback is derived from the request host, and the protected state cookie carries that redirect through callback. The host-only, `SameSite=Lax` access cookie must be available to the manager frontend. A raw internal HTTP alias works for runner-to-service traffic and is not the public OAuth origin.
 
 After installation, the manager redirects to its bundled frontend. Sign in with Cloudflare, select an account and R2 jurisdiction, then manage buckets and custom CDN domains. Track a bucket to create its Deploy Commander resource. Create an application connection to provision one bucket-scoped S3 credential pair. Secrets are stored only through Deploy Commander secret RPC and are never returned in manager metadata. Revoking a connection revokes its Cloudflare token and deletes its stored secrets.
 
-The **Tear down** control stays available even when Cloudflare sign-in or the manager API is unavailable. It starts the standard Commander `teardown` run using the saved runner image. The runner clears the manager redirect, and Commander reloads back into the installer as soon as that clearance is recorded. The installer shows the teardown run and its latest event, including after a reload, and enables another install only after teardown succeeds. Teardown preserves Cloudflare buckets and domains. Application access keys may remain active, and manager-created R2 resource records may remain in Deploy Commander. If the manager frontend cannot load or teardown cannot be started, delete the manager through Deploy Commander and publish the installer again to return to the installation flow.
+The **Tear down** control stays available even when Cloudflare sign-in or the manager API is unavailable. It opens a separate `/teardown` page, where the user types `cloudflare` and starts the standard Commander `teardown` run using the saved runner image. The page shows progress in a styled status message. When the runner clears the manager redirect, the teardown route is removed from the URL and the manager interface reloads into the installer. The installer enables another install after teardown succeeds. Teardown preserves Cloudflare buckets and domains. Application access keys may remain active, and manager-created R2 resource records may remain in Deploy Commander. If the manager frontend cannot load or teardown cannot be started, delete the manager through Deploy Commander and publish the installer again to return to the installation flow.
 
 Installation and teardown are the only run actions. Bucket, domain, and credential operations call the Go service directly and use Deploy Commander RPC for resource/connection records and secrets.
 
@@ -107,8 +107,8 @@ Before live use, verify in Deploy Commander staging with disposable Cloudflare r
 2. Complete OAuth in the popup and verify the manager session. Confirm cookies are host-only, Secure, HttpOnly, and expire with the access token.
 3. List accounts and buckets; create and delete an empty test bucket; attach and detach a test custom domain.
 4. Provision a read-only and read/write application connection; verify the token policy names exactly one bucket; then revoke and confirm the token and both connection secrets are removed.
-5. Load the manager frontend, make the Go API unavailable, then use **Tear down**. Verify that Commander starts the standard teardown run, the runner clears the redirect, and the host reloads to the installer while teardown status remains visible.
-6. Exercise a teardown failure before redirect clearance and verify the host stays on the manager. Record any application access keys and manager-created R2 resource records that remain after teardown; Cloudflare buckets and domains should remain.
+5. Load the manager frontend, make the Go API unavailable, directly load `/teardown`, and use **Tear down**. Verify the styled status appears, Commander starts the standard teardown run, the runner clears the redirect, and the manager page reloads into the installer.
+6. Exercise a teardown failure before redirect clearance and verify the manager stays available with the failure status. Record any application access keys and manager-created R2 resource records that remain after teardown; Cloudflare buckets and domains should remain.
 7. If the manager frontend cannot load, delete the manager in Commander and republish the installer, then verify that the installer is available again.
 
 These checks need real Cloudflare and Deploy Commander staging credentials and cannot be established by local unit tests or a container health check alone.
