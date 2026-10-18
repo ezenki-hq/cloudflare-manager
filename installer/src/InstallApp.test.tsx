@@ -60,7 +60,7 @@ describe("installer interface", () => {
     const harness = setup({ initialRun: done });
     const reloadPage = reload;
     render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadPage={reloadPage} />);
-    await screen.findByText("Done");
+    await screen.findByText("Installed", { selector: "span" });
     await waitFor(() => expect(reload).toHaveBeenCalledOnce());
   });
 
@@ -70,7 +70,7 @@ describe("installer interface", () => {
     const harness = setup();
     const reloadPage = reload;
     render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadPage={reloadPage} />);
-    await screen.findByText("Running");
+    await screen.findByRole("button", { name: "Installing" });
     harness.setRun({ ...install, status: 2 });
     fireEvent(window, new Event("focus"));
     await waitFor(() => expect(reload).toHaveBeenCalledOnce());
@@ -84,7 +84,8 @@ describe("installer interface", () => {
     const harness = setup({ initialRun: failed });
     const failedReload = vi.fn();
     const first = render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadPage={failedReload} />);
-    await screen.findByText("Failed");
+    await screen.findByRole("button", { name: "Install" });
+    expect(screen.queryByText("Failed")).toBeNull();
     expect(failedReload).not.toHaveBeenCalled();
     first.unmount();
 
@@ -98,46 +99,47 @@ describe("installer interface", () => {
     expect(reload).toHaveBeenCalledTimes(2);
   });
 
-  it("restores teardown status and event, then enables Install only after teardown succeeds", async () => {
+  it("uses teardown status to guard Install without showing run details", async () => {
     const teardown = { ...install, id: "teardown-1", action: "teardown", status: 1, queued_at: "2026-10-16T11:00:00Z" } as RunItem;
     const harness = setup({ initialRun: { ...install, status: 2 }, initialTeardown: teardown });
     const reloadPage = vi.fn().mockReturnValue(true);
     render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadPage={reloadPage} />);
-    expect(await screen.findByLabelText("teardown run status")).toBeTruthy();
-    expect(screen.getByLabelText("teardown run status").textContent).toContain("Install runner started");
-    expect((screen.getByRole("button", { name: "Teardown active" }) as HTMLButtonElement).disabled).toBe(true);
+    await screen.findByRole("button", { name: "Teardown in progress" });
+    expect(screen.queryByText("teardown-1")).toBeNull();
+    expect(screen.queryByText("Install runner started")).toBeNull();
+    expect(screen.queryByLabelText("install run status")).toBeNull();
+    expect(screen.queryByLabelText("teardown run status")).toBeNull();
+    expect((screen.getByRole("button", { name: "Teardown in progress" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(harness.caller.getRunEvents).not.toHaveBeenCalled();
     harness.setTeardown({ ...teardown, status: 2 });
     fireEvent(window, new Event("focus"));
     await waitFor(() => expect(screen.getByRole("button", { name: "Install" })).toBeTruthy());
     expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("restores install status and the latest saved event after opening", async () => {
-    const { bridge } = setup();
-    render(<InstallApp bridge={bridge} defaults={defaults} />);
-    expect(await screen.findByText("Install runner started")).toBeTruthy();
-    expect(screen.getByText("Running")).toBeTruthy();
-  });
-
-  it("shows a waiting message when the run has no structured event", async () => {
-    render(<InstallApp bridge={setup({ event: null }).bridge} defaults={defaults} />);
-    expect(await screen.findByText("Waiting for the first install event…")).toBeTruthy();
-  });
-
-  it("updates from matching live events and ignores stale or unrelated updates", async () => {
+  it("restores install status without showing its ID or saved event", async () => {
     const harness = setup();
     render(<InstallApp bridge={harness.bridge} defaults={defaults} />);
-    expect(await screen.findByText("Install runner started")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Installing" })).toBeTruthy();
+    expect(screen.queryByText("install-1")).toBeNull();
+    expect(screen.queryByText("Install runner started")).toBeNull();
+    expect(screen.queryByLabelText("install run status")).toBeNull();
+    expect(harness.caller.getRunEvents).not.toHaveBeenCalled();
+  });
+
+  it("uses live run events to refresh lifecycle state without displaying event messages", async () => {
+    const harness = setup();
+    render(<InstallApp bridge={harness.bridge} defaults={defaults} />);
     harness.emit({ type: "event", eventType: "run-update", data: { type: "event", payload: { run_id: "install-1", seq: 6, message: "Service is healthy" } } });
-    expect(await screen.findByText("Service is healthy")).toBeTruthy();
+    await waitFor(() => expect(harness.caller.getLatestRun).toHaveBeenCalledWith({ action: "install" }));
     harness.emit({ type: "event", eventType: "run-update", data: { type: "event", payload: { run_id: "install-1", seq: 4, message: "Old event" } } });
     harness.emit({ type: "event", eventType: "run-update", data: { type: "event", payload: { run_id: "other-run", seq: 10, message: "Other run" } } });
     harness.emit({ type: "event", eventType: "run-update", data: { type: "log", payload: { run_id: "install-1", seq: 11, message: "A log line" } } });
     harness.emit({ type: "event", eventType: "run-update", data: { type: "event", payload: { run_id: "install-1", seq: 7 } } });
-    expect(screen.getByText("Service is healthy")).toBeTruthy();
     expect(screen.queryByText("Old event")).toBeNull();
     expect(screen.queryByText("Other run")).toBeNull();
     expect(screen.queryByText("A log line")).toBeNull();
+    expect(screen.queryByText("Service is healthy")).toBeNull();
   });
 
   it("refreshes the run when an install starts", async () => {
@@ -146,7 +148,8 @@ describe("installer interface", () => {
     await screen.findByRole("button", { name: "Install" });
     harness.setRun({ ...install, id: "install-3", status: 1 });
     harness.emit({ type: "event", eventType: "run-start", data: { id: "install-3", manager: "manager-1", action: "install" } });
-    await waitFor(() => expect(screen.getByLabelText("install run status").textContent).toContain("Running"));
+    await screen.findByRole("button", { name: "Installing" });
+    expect(screen.queryByText("install-3")).toBeNull();
     expect(harness.caller.getLatestRun).toHaveBeenCalledWith({ action: "install" });
   });
 
@@ -174,13 +177,13 @@ describe("installer interface", () => {
     await screen.findByText("Commander connection ready");
     fireEvent.click(await screen.findByRole("button", { name: "Install" }));
     await waitFor(() => expect(harness.caller.start).toHaveBeenCalledOnce());
-    expect((screen.getByRole("button", { name: "Install run active" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Installing" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("unsubscribes and ends the interface wire on unmount", async () => {
     const harness = setup();
     const view = render(<InstallApp bridge={harness.bridge} defaults={defaults} />);
-    await screen.findByText("Install runner started");
+    await screen.findByRole("button", { name: "Installing" });
     expect(harness.listenerCount()).toBe(1);
     view.unmount();
     expect(harness.listenerCount()).toBe(0);

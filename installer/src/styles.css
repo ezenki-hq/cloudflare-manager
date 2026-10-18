@@ -39,8 +39,6 @@ button, input { font: inherit; }
 .button:disabled { cursor: not-allowed; opacity: .54; }
 .button-secondary { color: #23443a; background: #eaf2ee; }
 .button-link { display: inline-flex; align-items: center; text-decoration: none; color: #fff; background: #465f56; }
-.run-summary { margin: 0 0 16px; padding: 13px 15px; display: grid; gap: 5px; border: 1px solid #dfe8e4; border-radius: 9px; color: #52625c; font-size: 11px; }
-.run-summary p { margin: 2px 0 0; color: #75827d; }
 .inline-error { margin: 0 0 12px; color: #a54035; font-size: 12px; }
 footer { max-width: 790px; margin-top: 24px; color: #84918d; font-size: 10px; }
 @media (max-width: 620px) { .install-shell { padding: 0 16px 24px; } .brand { height: 68px; } .hero { padding: 32px 0 22px; } .panel { padding: 18px; } .oauth-setup dl > div { grid-template-columns: 1fr; gap: 1px; } }

@@ -27,8 +27,6 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
   const [state, setState] = useState<InstallerUIState>("ready");
   const [installRun, setInstallRun] = useState<RunItem | null>(null);
   const [teardownRun, setTeardownRun] = useState<RunItem | null>(null);
-  const [lastEvent, setLastEvent] = useState<{ seq: number; message: string } | null>(null);
-  const [teardownEvent, setTeardownEvent] = useState<{ seq: number; message: string } | null>(null);
   const [reloadBlocked, setReloadBlocked] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -36,24 +34,21 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
   const [error, setError] = useState("");
   const currentRunId = useRef<string | null>(null);
   const locallyActiveRun = useRef<RunItem | null>(null);
-  const latestEventSeq = useRef(-1);
-  const latestTeardownEventSeq = useRef(-1);
   const teardownRunId = useRef<string | null>(null);
   const refreshVersion = useRef(0);
 
   const refresh = useCallback(async () => {
     const version = ++refreshVersion.current;
-    const [snapshot, teardownSnapshot] = await Promise.all([
+    const [install, teardown] = await Promise.all([
       loadLatestInstall(caller),
       loadLatestTeardown(caller),
     ]);
     if (version !== refreshVersion.current) return;
-    const teardown = teardownSnapshot?.run ?? null;
     teardownRunId.current = teardown?.id ?? null;
     setTeardownRun(teardown);
-    if (locallyActiveRun.current && isActive(locallyActiveRun.current.status) && snapshot?.run.id !== locallyActiveRun.current.id) {
+    if (locallyActiveRun.current && isActive(locallyActiveRun.current.status) && install?.id !== locallyActiveRun.current.id) {
       if (isActive(teardown?.status)) {
-        setInstallRun(snapshot?.run ?? locallyActiveRun.current);
+        setInstallRun(install ?? locallyActiveRun.current);
         setState("tearing-down");
       } else {
         setInstallRun(locallyActiveRun.current);
@@ -61,22 +56,14 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
       }
       return;
     }
-    if (snapshot?.run.id === locallyActiveRun.current?.id || (locallyActiveRun.current && !isActive(locallyActiveRun.current.status))) locallyActiveRun.current = null;
-    currentRunId.current = snapshot?.run.id ?? null;
-    setInstallRun(snapshot?.run ?? null);
-    const lifecycleState = installationState(snapshot?.run ?? null, teardown);
+    if (install?.id === locallyActiveRun.current?.id || (locallyActiveRun.current && !isActive(locallyActiveRun.current.status))) locallyActiveRun.current = null;
+    currentRunId.current = install?.id ?? null;
+    setInstallRun(install);
+    const lifecycleState = installationState(install, teardown);
     setState(lifecycleState);
-    if (snapshot?.lastEvent && snapshot.lastEvent.seq >= latestEventSeq.current) {
-      latestEventSeq.current = snapshot.lastEvent.seq;
-      if (snapshot.lastEvent.message.trim()) setLastEvent(snapshot.lastEvent);
-    }
-    if (teardownSnapshot?.lastEvent && teardownSnapshot.lastEvent.seq >= latestTeardownEventSeq.current) {
-      latestTeardownEventSeq.current = teardownSnapshot.lastEvent.seq;
-      if (teardownSnapshot.lastEvent.message.trim()) setTeardownEvent(teardownSnapshot.lastEvent);
-    }
-    if (snapshot?.run.status === 2 && lifecycleState === "installed") {
+    if (install?.status === 2 && lifecycleState === "installed") {
       const managerId = await caller.getManager().catch(() => "");
-      if (managerId && !reloadCurrentInterface(managerId, "install", snapshot.run.id, reloadPage)) setReloadBlocked(true);
+      if (managerId && !reloadCurrentInterface(managerId, "install", install.id, reloadPage)) setReloadBlocked(true);
     }
   }, [caller, reloadPage]);
 
@@ -91,11 +78,7 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
       if (event.eventType === "run-start" && event.data.action === "install") {
         const queuedAt = event.data.created ?? new Date().toISOString();
         locallyActiveRun.current = { id: event.data.id, action: "install", status: 0, queued_at: queuedAt, created_at: queuedAt, updated_at: queuedAt };
-        if (event.data.id !== currentRunId.current) {
-          currentRunId.current = event.data.id;
-          latestEventSeq.current = -1;
-          setLastEvent(null);
-        }
+        if (event.data.id !== currentRunId.current) currentRunId.current = event.data.id;
         setInstallRun(locallyActiveRun.current);
         setState("installing");
         void refresh().catch((cause) => setError(message(cause)));
@@ -105,8 +88,6 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
         const queuedAt = event.data.created ?? new Date().toISOString();
         teardownRunId.current = event.data.id;
         setTeardownRun({ id: event.data.id, action: "teardown", status: 0, queued_at: queuedAt, created_at: queuedAt, updated_at: queuedAt });
-        latestTeardownEventSeq.current = -1;
-        setTeardownEvent(null);
         setState("tearing-down");
         void refresh().catch((cause) => setError(message(cause)));
         return;
@@ -116,10 +97,6 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
       const isInstallUpdate = runId === currentRunId.current;
       const isTeardownUpdate = runId === teardownRunId.current;
       if (!isInstallUpdate && !isTeardownUpdate) return;
-      if (event.data.type === "event") {
-        if (isTeardownUpdate) applyLiveEvent(event.data.payload, latestTeardownEventSeq, setTeardownEvent);
-        else applyLiveEvent(event.data.payload, latestEventSeq, setLastEvent);
-      }
       void refresh().catch((cause) => setError(message(cause)));
     });
     return () => { alive = false; refreshVersion.current += 1; unsubscribe(); bridge.wire.end(); };
@@ -145,8 +122,6 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
       const run: RunItem = { action: "install", status: started.status, id: started.id, queued_at: started.queued_at, created_at: started.queued_at, updated_at: started.queued_at };
       locallyActiveRun.current = run;
       currentRunId.current = run.id;
-      latestEventSeq.current = -1;
-      setLastEvent(null);
       setInstallRun(run);
       setState("installing");
       await refresh();
@@ -197,8 +172,6 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
     </section>
     <section className="panel" aria-labelledby="install-title">
       <div className="panel-heading"><div><h2 id="install-title">Manager service</h2><p>Install the full stack manager in Deploy Commander.</p></div><span className={`status-pill status-${state}`}>{loading ? "Loading status" : stateLabel(state)}</span></div>
-      {installRun && <div className="run-summary" aria-label="install run status"><strong>{statusLabel(installRun.status)}</strong><span>Run {installRun.id}</span><p aria-live="polite">{lastEvent?.message || "Waiting for the first install event…"}</p></div>}
-      {teardownRun && <div className="run-summary" aria-label="teardown run status"><strong>{statusLabel(teardownRun.status)}</strong><span>Teardown run {teardownRun.id}</span><p aria-live="polite">{teardownEvent?.message || "Waiting for the first teardown event…"}</p></div>}
       {reloadBlocked && <p role="alert" className="inline-error">The installer did not reload automatically. <button className="button button-secondary" type="button" onClick={reloadPage}>Reload interface</button></p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
       <form className="install-form" onSubmit={(event) => void submit(event)}>
@@ -230,18 +203,8 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
   </main>;
 }
 
-function applyLiveEvent(event: { run_id: string; seq?: number; message?: string }, latestSeq: { current: number }, setEvent: (event: { seq: number; message: string }) => void): void {
-  if (typeof event.seq !== "number" || event.seq <= latestSeq.current || !event.message?.trim()) return;
-  latestSeq.current = event.seq;
-  setEvent({ seq: event.seq, message: event.message });
-}
-
 function stateLabel(state: InstallerUIState): string {
-  return ({ ready: "Not installed", installing: "Install run active", installed: "Installed", "tearing-down": "Teardown active", unavailable: "Status unavailable" })[state];
-}
-
-function statusLabel(status: number): string {
-  return (["Queued", "Running", "Done", "Failed"][status] ?? "Unknown");
+  return ({ ready: "Not installed", installing: "Installing", installed: "Installed", "tearing-down": "Teardown in progress", unavailable: "Status unavailable" })[state];
 }
 
 function message(error: unknown): string {
