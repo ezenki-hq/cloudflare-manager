@@ -1,73 +1,68 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RPCCaller } from "@ezenki/deploy-commander-installer-interface";
-import type { BackendAPI } from "./api";
 import { loadLatestTeardown } from "./runHistory";
 import { startTeardown } from "./teardown";
 
-const resourceId = "bucket-resource";
-const connectionId = "application-connection";
-
 function mocks() {
-  const sequence: string[] = [];
   const caller = {
-    getMyResources: vi.fn().mockResolvedValue({ items: [{ id: resourceId, type: "cloudflare-r2-bucket", name: "uploads", manager: "current", external: false, created_at: "", updated_at: "" }], limit: 100, offset: 0, total: 1 }),
-    getConnections: vi.fn().mockResolvedValue({ items: [{ id: connectionId, manager: "app", resource: resourceId, external: false, created_at: "", updated_at: "" }], limit: 100, offset: 0, total: 1 }),
-    getConnection: vi.fn().mockResolvedValue({ connection: { id: connectionId, manager: "app", resource: resourceId, external: false, created_at: "", updated_at: "" }, config: { id: connectionId, manager: "app", resource: resourceId, metadata: { accountId: "account-1", bucket: "uploads", jurisdiction: "default", endpoint: "https://account-1.r2.cloudflarestorage.com", permission: "read-write", token_id: "token-1", status: "ready" } } }),
-    getResource: vi.fn().mockResolvedValue({ resource: { id: resourceId, type: "cloudflare-r2-bucket", name: "uploads", manager: "current", external: false, created_at: "", updated_at: "" }, config: { id: resourceId, manager: "current", name: "uploads", agent: "", resource_type: "cloudflare-r2-bucket", metadata: { account_id: "account-1", bucket_name: "uploads", jurisdiction: "default", s3_endpoint: "https://account-1.r2.cloudflarestorage.com" } } }),
-    deleteSecret: vi.fn().mockResolvedValue(undefined).mockImplementation(async () => { sequence.push("secret"); }),
-    updateConnection: vi.fn().mockResolvedValue(undefined),
-    deleteConnection: vi.fn().mockResolvedValue(undefined).mockImplementation(async () => { sequence.push("connection"); }),
-    deleteResource: vi.fn().mockResolvedValue(undefined).mockImplementation(async () => { sequence.push("resource"); }),
+    getMyResources: vi.fn(),
+    deleteResource: vi.fn(),
+    getConnections: vi.fn(),
+    deleteConnection: vi.fn(),
     getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown"
       ? { id: "teardown-run", action: "teardown", status: 2, created_at: "", queued_at: "", updated_at: "" }
       : { id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }),
     getRun: vi.fn().mockResolvedValue({ run: { id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }, config: { action: "install", manager: "manager", run: "install-run", runner: "ezenki/deploy-commander-runner:latest", metadata: {} } }),
     getRunUpdates: vi.fn().mockResolvedValue({ events: { events: [] }, logs: { items: [] } }),
     getRunEvents: vi.fn().mockResolvedValue({ events: [{ seq: 3, message: "Runner stopped" }], limit: 1, offset: 0, total: 3 }),
-    start: vi.fn().mockImplementation(async (options: any) => { sequence.push("start"); return { id: "teardown-run", queued_at: "now", status: 0, options }; }),
+    start: vi.fn().mockImplementation(async (options: any) => ({ id: "teardown-run", queued_at: "now", status: 0, options })),
   } as unknown as RPCCaller;
-  const api = {
-    session: vi.fn().mockResolvedValue({ authenticated: true }),
-    prepareTeardown: vi.fn().mockResolvedValue({ resource_ids: [resourceId] }).mockImplementation(async () => { sequence.push("prepare"); return { resource_ids: [resourceId] }; }),
-    revokeCredential: vi.fn().mockResolvedValue(undefined).mockImplementation(async () => { sequence.push("cloudflare"); }),
-    findCredential: vi.fn().mockResolvedValue({ token_id: "token-1" }),
-  } as unknown as BackendAPI;
-  return { caller, api, sequence };
+  return { caller };
 }
 
 describe("manager teardown", () => {
-  it("asks Go to clean connections, removes safe resource records, then starts one teardown run", async () => {
-    const { caller, api, sequence } = mocks();
-    const result = await startTeardown(caller, api);
-    expect(sequence).toEqual(["prepare", "resource", "start"]);
+  it("starts teardown through Commander without calling resource or connection APIs", async () => {
+    const { caller } = mocks();
+    const result = await startTeardown(caller);
     expect(caller.start).toHaveBeenCalledOnce();
     const options = vi.mocked(caller.start).mock.calls[0]?.[0] as any;
     expect(options).toEqual({ action: "teardown", runner: "ezenki/deploy-commander-runner:latest", platform: "docker" });
+    expect(caller.getMyResources).not.toHaveBeenCalled();
+    expect(caller.deleteResource).not.toHaveBeenCalled();
+    expect(caller.getConnections).not.toHaveBeenCalled();
+    expect(caller.deleteConnection).not.toHaveBeenCalled();
     expect(result.id).toBe("teardown-run");
   });
 
-  it("blocks teardown when OAuth has expired", async () => {
-    const { caller, api } = mocks();
-    vi.mocked(api.session).mockRejectedValueOnce(Object.assign(new Error("Sign in"), { status: 401 }));
-    await expect(startTeardown(caller, api)).rejects.toThrow("Sign in");
+  it.each(["install", "teardown"])("blocks teardown while a %s run is active", async (action) => {
+    const { caller } = mocks();
+    vi.mocked(caller.getLatestRun).mockImplementation(async ({ action: requested }: { action?: string } = {}) => requested === action
+      ? { id: "active-run", action, status: 1, created_at: "", queued_at: "", updated_at: "" }
+      : null);
+    await expect(startTeardown(caller)).rejects.toThrow("already queued or running");
     expect(caller.start).not.toHaveBeenCalled();
   });
 
-  it("blocks teardown and retains resources when Go cannot finish cleanup", async () => {
-    const { caller, api } = mocks();
-    vi.mocked(api.prepareTeardown).mockRejectedValueOnce(new Error("Cloudflare unavailable"));
-    await expect(startTeardown(caller, api)).rejects.toThrow("Cloudflare unavailable");
-    expect(caller.deleteConnection).not.toHaveBeenCalled();
-    expect(caller.deleteResource).not.toHaveBeenCalled();
+  it("requires a saved install run", async () => {
+    const { caller } = mocks();
+    vi.mocked(caller.getLatestRun).mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown" ? null : null);
+    await expect(startTeardown(caller)).rejects.toThrow("No install run");
     expect(caller.start).not.toHaveBeenCalled();
   });
 
-  it("keeps resource records and does not start teardown unless Go marks every resource safe", async () => {
-    const { caller, api } = mocks();
-    vi.mocked(api.prepareTeardown).mockResolvedValue({ resource_ids: [] });
-    await expect(startTeardown(caller, api)).rejects.toThrow(/connections or could not be cleaned up/i);
-    expect(caller.deleteResource).not.toHaveBeenCalled();
+  it("rejects a malformed saved runner reference", async () => {
+    const { caller } = mocks();
+    vi.mocked(caller.getRun).mockResolvedValueOnce({ config: { runner: "bad image" } } as any);
+    await expect(startTeardown(caller)).rejects.toThrow("missing or has no tag");
     expect(caller.start).not.toHaveBeenCalled();
+  });
+
+  it("allows retry after Commander rejects the start", async () => {
+    const { caller } = mocks();
+    vi.mocked(caller.start).mockRejectedValueOnce(new Error("Commander unavailable"));
+    await expect(startTeardown(caller)).rejects.toThrow("Commander unavailable");
+    await expect(startTeardown(caller)).resolves.toMatchObject({ id: "teardown-run" });
+    expect(caller.start).toHaveBeenCalledTimes(2);
   });
 
   it("recovers the latest durable teardown event after reload", async () => {
