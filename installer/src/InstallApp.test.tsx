@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RPCCaller, RunItem } from "@ezenki/deploy-commander-installer-interface";
 import type { CommanderBridge, InterfaceEvent } from "./commander";
 import { InstallApp } from "./InstallApp";
+import { reloadCommanderHost } from "./hostNavigation";
 
 const defaults = {
   backendImage: "ghcr.io/ezenki/cloudflare-manager:1.2.3",
@@ -13,14 +14,15 @@ const install: RunItem = { id: "install-1", action: "install", status: 1, queued
 
 afterEach(cleanup);
 
-function setup(options: { initialRun?: RunItem | null; event?: { seq: number; message: string } | null; startError?: Error; historyError?: Error; commanderConnection?: boolean } = {}) {
+function setup(options: { initialRun?: RunItem | null; event?: { seq: number; message: string } | null; initialTeardown?: RunItem | null; startError?: Error; historyError?: Error; commanderConnection?: boolean } = {}) {
   let currentRun = options.initialRun === undefined ? install : options.initialRun;
+  let currentTeardown = options.initialTeardown ?? null;
   let currentEvent = options.event === undefined ? { seq: 5, message: "Install runner started" } : options.event;
   let commanderConnectionExists = options.commanderConnection ?? true;
   const caller = {
     getLatestRun: vi.fn().mockImplementation(async ({ action }: { action: string }) => {
       if (action === "install" && options.historyError) throw options.historyError;
-      return action === "install" ? currentRun : null;
+      return action === "install" ? currentRun : currentTeardown;
     }),
     getRunEvents: vi.fn().mockImplementation(async () => ({ events: currentEvent ? [{ ...currentEvent, phase: "deploy", at: "" }] : [], limit: 1, offset: 0, total: currentEvent ? 1 : 0 })),
     getManager: vi.fn().mockResolvedValue("manager-1"),
@@ -46,11 +48,70 @@ function setup(options: { initialRun?: RunItem | null; event?: { seq: number; me
     emit(event: InterfaceEvent) { listeners.forEach((handler) => handler(event)); },
     listenerCount: () => listeners.size,
     setRun(run: RunItem | null) { currentRun = run; },
+    setTeardown(run: RunItem | null) { currentTeardown = run; },
     setEvent(event: { seq: number; message: string } | null) { currentEvent = event; },
   };
 }
 
 describe("installer interface", () => {
+  it("reloads the containing Commander page once for a saved successful install", async () => {
+    sessionStorage.clear();
+    const reload = vi.fn();
+    const done = { ...install, status: 2 };
+    const harness = setup({ initialRun: done });
+    const reloadHost = (managerId: string, action: "install" | "teardown", runId: string) => reloadCommanderHost(managerId, action, runId, reload);
+    render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadHost={reloadHost} />);
+    await screen.findByText("Done");
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+  });
+
+  it("catches a missed install completion from saved status and avoids duplicate reloads", async () => {
+    sessionStorage.clear();
+    const reload = vi.fn();
+    const harness = setup();
+    const reloadHost = (managerId: string, action: "install" | "teardown", runId: string) => reloadCommanderHost(managerId, action, runId, reload);
+    render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadHost={reloadHost} />);
+    await screen.findByText("Running");
+    harness.setRun({ ...install, status: 2 });
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+  });
+
+  it("does not reload for a failed install and offers retry when reload is blocked", async () => {
+    sessionStorage.clear();
+    const failed = { ...install, status: 3 };
+    const harness = setup({ initialRun: failed });
+    const failedReload = vi.fn();
+    const first = render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadHost={failedReload} />);
+    await screen.findByText("Failed");
+    expect(failedReload).not.toHaveBeenCalled();
+    first.unmount();
+
+    sessionStorage.clear();
+    const reload = vi.fn().mockImplementationOnce(() => { throw new Error("blocked"); });
+    const doneHarness = setup({ initialRun: { ...failed, status: 2 } });
+    const reloadHost = (managerId: string, action: "install" | "teardown", runId: string) => reloadCommanderHost(managerId, action, runId, reload);
+    render(<InstallApp bridge={doneHarness.bridge} defaults={defaults} reloadHost={reloadHost} />);
+    expect(await screen.findByRole("button", { name: "Reload Commander" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reload Commander" }));
+  });
+
+  it("restores teardown status and event, then enables Install only after teardown succeeds", async () => {
+    const teardown = { ...install, id: "teardown-1", action: "teardown", status: 1, queued_at: "2026-10-16T11:00:00Z" } as RunItem;
+    const harness = setup({ initialRun: { ...install, status: 2 }, initialTeardown: teardown });
+    const reloadHost = vi.fn().mockReturnValue(true);
+    render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadHost={reloadHost} />);
+    expect(await screen.findByLabelText("teardown run status")).toBeTruthy();
+    expect(screen.getByLabelText("teardown run status").textContent).toContain("Install runner started");
+    expect((screen.getByRole("button", { name: "Teardown active" }) as HTMLButtonElement).disabled).toBe(true);
+    harness.setTeardown({ ...teardown, status: 2 });
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Install" })).toBeTruthy());
+    expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("restores install status and the latest saved event after opening", async () => {
     const { bridge } = setup();
     render(<InstallApp bridge={bridge} defaults={defaults} />);

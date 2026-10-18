@@ -3,18 +3,20 @@ import type { RunItem } from "@ezenki/deploy-commander-installer-interface";
 import { inspectCommanderConnection, resolveCommanderConnection, type CommanderConnection } from "./commanderConnection";
 import { installationState, startInstall, type InstallInput, type InstallationState } from "./installer";
 import type { CommanderBridge } from "./commander";
-import { loadLatestInstall } from "./runHistory";
+import { reloadCommanderHost } from "./hostNavigation";
+import { loadLatestInstall, loadLatestTeardown } from "./runHistory";
 import { loadClientID, saveClientID } from "./settings";
 
 interface InstallAppProps {
   bridge: CommanderBridge;
   defaults: InstallInput;
+  reloadHost?: typeof reloadCommanderHost;
 }
 
 type InstallerUIState = InstallationState | "unavailable";
 type ConnectionUIState = "checking" | "missing" | "ready" | "error";
 
-export function InstallApp({ bridge, defaults }: InstallAppProps) {
+export function InstallApp({ bridge, defaults, reloadHost = reloadCommanderHost }: InstallAppProps) {
   const { caller } = bridge;
   const [clientID, setClientID] = useState("");
   const [commanderConnection, setCommanderConnection] = useState<CommanderConnection | null>(null);
@@ -23,7 +25,10 @@ export function InstallApp({ bridge, defaults }: InstallAppProps) {
   const [connectionError, setConnectionError] = useState("");
   const [state, setState] = useState<InstallerUIState>("ready");
   const [installRun, setInstallRun] = useState<RunItem | null>(null);
+  const [teardownRun, setTeardownRun] = useState<RunItem | null>(null);
   const [lastEvent, setLastEvent] = useState<{ seq: number; message: string } | null>(null);
+  const [teardownEvent, setTeardownEvent] = useState<{ seq: number; message: string } | null>(null);
+  const [reloadBlocked, setReloadBlocked] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [savingClientID, setSavingClientID] = useState(false);
@@ -31,15 +36,20 @@ export function InstallApp({ bridge, defaults }: InstallAppProps) {
   const currentRunId = useRef<string | null>(null);
   const locallyActiveRun = useRef<RunItem | null>(null);
   const latestEventSeq = useRef(-1);
+  const latestTeardownEventSeq = useRef(-1);
+  const teardownRunId = useRef<string | null>(null);
   const refreshVersion = useRef(0);
 
   const refresh = useCallback(async () => {
     const version = ++refreshVersion.current;
-    const [snapshot, teardown] = await Promise.all([
+    const [snapshot, teardownSnapshot] = await Promise.all([
       loadLatestInstall(caller),
-      caller.getLatestRun({ action: "teardown" }),
+      loadLatestTeardown(caller),
     ]);
     if (version !== refreshVersion.current) return;
+    const teardown = teardownSnapshot?.run ?? null;
+    teardownRunId.current = teardown?.id ?? null;
+    setTeardownRun(teardown);
     if (locallyActiveRun.current && isActive(locallyActiveRun.current.status) && snapshot?.run.id !== locallyActiveRun.current.id) {
       if (isActive(teardown?.status)) {
         setInstallRun(snapshot?.run ?? locallyActiveRun.current);
@@ -53,12 +63,21 @@ export function InstallApp({ bridge, defaults }: InstallAppProps) {
     if (snapshot?.run.id === locallyActiveRun.current?.id || (locallyActiveRun.current && !isActive(locallyActiveRun.current.status))) locallyActiveRun.current = null;
     currentRunId.current = snapshot?.run.id ?? null;
     setInstallRun(snapshot?.run ?? null);
-    setState(installationState(snapshot?.run ?? null, teardown));
+    const lifecycleState = installationState(snapshot?.run ?? null, teardown);
+    setState(lifecycleState);
     if (snapshot?.lastEvent && snapshot.lastEvent.seq >= latestEventSeq.current) {
       latestEventSeq.current = snapshot.lastEvent.seq;
       if (snapshot.lastEvent.message.trim()) setLastEvent(snapshot.lastEvent);
     }
-  }, [caller]);
+    if (teardownSnapshot?.lastEvent && teardownSnapshot.lastEvent.seq >= latestTeardownEventSeq.current) {
+      latestTeardownEventSeq.current = teardownSnapshot.lastEvent.seq;
+      if (teardownSnapshot.lastEvent.message.trim()) setTeardownEvent(teardownSnapshot.lastEvent);
+    }
+    if (snapshot?.run.status === 2 && lifecycleState === "installed") {
+      const managerId = await caller.getManager().catch(() => "");
+      if (managerId && !reloadHost(managerId, "install", snapshot.run.id)) setReloadBlocked(true);
+    }
+  }, [caller, reloadHost]);
 
   useEffect(() => {
     let alive = true;
@@ -81,12 +100,39 @@ export function InstallApp({ bridge, defaults }: InstallAppProps) {
         void refresh().catch((cause) => setError(message(cause)));
         return;
       }
-      if (event.eventType !== "run-update" || event.data.payload.run_id !== currentRunId.current) return;
-      if (event.data.type === "event") applyLiveEvent(event.data.payload, latestEventSeq, setLastEvent);
+      if (event.eventType === "run-start" && event.data.action === "teardown") {
+        const queuedAt = event.data.created ?? new Date().toISOString();
+        teardownRunId.current = event.data.id;
+        setTeardownRun({ id: event.data.id, action: "teardown", status: 0, queued_at: queuedAt, created_at: queuedAt, updated_at: queuedAt });
+        latestTeardownEventSeq.current = -1;
+        setTeardownEvent(null);
+        setState("tearing-down");
+        void refresh().catch((cause) => setError(message(cause)));
+        return;
+      }
+      if (event.eventType !== "run-update") return;
+      const runId = event.data.payload.run_id;
+      const isInstallUpdate = runId === currentRunId.current;
+      const isTeardownUpdate = runId === teardownRunId.current;
+      if (!isInstallUpdate && !isTeardownUpdate) return;
+      if (event.data.type === "event") {
+        if (isTeardownUpdate) applyLiveEvent(event.data.payload, latestTeardownEventSeq, setTeardownEvent);
+        else applyLiveEvent(event.data.payload, latestEventSeq, setLastEvent);
+      }
       void refresh().catch((cause) => setError(message(cause)));
     });
     return () => { alive = false; refreshVersion.current += 1; unsubscribe(); bridge.wire.end(); };
   }, [bridge, refresh]);
+
+  useEffect(() => { teardownRunId.current = teardownRun?.id ?? null; }, [teardownRun?.id]);
+
+  useEffect(() => {
+    if (!isActive(installRun?.status) && !isActive(teardownRun?.status) && !isActive(locallyActiveRun.current?.status)) return;
+    const poll = () => { void refresh().catch((cause) => setError(message(cause))); };
+    const timer = window.setInterval(poll, 3000);
+    window.addEventListener("focus", poll);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", poll); };
+  }, [installRun?.status, teardownRun?.status, refresh]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -151,6 +197,8 @@ export function InstallApp({ bridge, defaults }: InstallAppProps) {
     <section className="panel" aria-labelledby="install-title">
       <div className="panel-heading"><div><h2 id="install-title">Manager service</h2><p>Install the full stack manager in Deploy Commander.</p></div><span className={`status-pill status-${state}`}>{loading ? "Loading status" : stateLabel(state)}</span></div>
       {installRun && <div className="run-summary" aria-label="install run status"><strong>{statusLabel(installRun.status)}</strong><span>Run {installRun.id}</span><p aria-live="polite">{lastEvent?.message || "Waiting for the first install event…"}</p></div>}
+      {teardownRun && <div className="run-summary" aria-label="teardown run status"><strong>{statusLabel(teardownRun.status)}</strong><span>Teardown run {teardownRun.id}</span><p aria-live="polite">{teardownEvent?.message || "Waiting for the first teardown event…"}</p></div>}
+      {reloadBlocked && <p role="alert" className="inline-error">Commander did not reload automatically. <button className="button button-secondary" type="button" onClick={() => window.parent.location.reload()}>Reload Commander</button></p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
       <form className="install-form" onSubmit={(event) => void submit(event)}>
         <button className="button" disabled={loading || busy || state !== "ready" || connectionState !== "ready" || !commanderConnection} type="submit">{busy ? "Starting install…" : state === "ready" ? "Install" : stateLabel(state)}</button>

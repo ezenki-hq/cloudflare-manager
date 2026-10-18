@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RPCCaller, RunItem } from "@ezenki/deploy-commander-installer-interface";
-import { loadLatestInstall } from "./runHistory";
+import { loadLatestInstall, loadLatestTeardown } from "./runHistory";
 
 const run: RunItem = { id: "install-1", action: "install", status: 1, queued_at: "2026-10-16T10:00:00Z", created_at: "2026-10-16T10:00:00Z", updated_at: "2026-10-16T10:00:00Z" };
 
@@ -26,5 +26,15 @@ describe("installer run history", () => {
     const caller = { getLatestRun: vi.fn().mockResolvedValue(null), getRunEvents: vi.fn() } as unknown as RPCCaller;
     await expect(loadLatestInstall(caller)).resolves.toBeNull();
     expect(caller.getRunEvents).not.toHaveBeenCalled();
+  });
+
+  it("loads the latest saved event for a teardown run", async () => {
+    const teardown = { ...run, id: "teardown-1", action: "teardown" } as RunItem;
+    const caller = {
+      getLatestRun: vi.fn().mockResolvedValue(teardown),
+      getRunEvents: vi.fn().mockResolvedValue({ events: [{ seq: 17, message: "Manager redirect cleared" }], limit: 1, offset: 0, total: 17 }),
+    } as unknown as RPCCaller;
+    await expect(loadLatestTeardown(caller)).resolves.toEqual({ run: teardown, lastEvent: { seq: 17, message: "Manager redirect cleared" } });
+    expect(caller.getRunEvents).toHaveBeenCalledWith({ run_id: "teardown-1", limit: 1, order: "desc" });
   });
 });
