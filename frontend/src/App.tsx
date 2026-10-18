@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Account, BackendAPI, Bucket, BucketPage, Domain, Zone } from "./api";
 import type { CommanderBridge } from "./commander";
+import { reloadCommanderHost } from "./hostNavigation";
+import { getCurrentManagerRedirect } from "./managerRedirect";
 import { provisionConnection, revokeConnection } from "./connections";
 import { BucketDetail } from "./components/BucketDetail";
 import { findBucketResource, registerBucket, removeBucketRecord, setBucketPrimaryDomain, type ManagedBucket } from "./resources";
@@ -11,20 +13,24 @@ interface AppProps {
   bridge: CommanderBridge;
   api: BackendAPI;
   backendOrigin: string;
+  reloadHost?: typeof reloadCommanderHost;
 }
 
 type AuthState = "checking" | "signed-out" | "signed-in" | "blocked" | "unavailable";
 
-export function App({ bridge, api, backendOrigin }: AppProps) {
+export function App({ bridge, api, backendOrigin, reloadHost = reloadCommanderHost }: AppProps) {
   const { caller } = bridge;
   const popupRef = useRef<Window | null>(null);
   const bucketListRef = useRef<Bucket[]>([]);
   const teardownRefreshVersion = useRef(0);
+  const activeInstallIds = useRef(new Set<string>());
   const [auth, setAuth] = useState<AuthState>("checking");
   const [authError, setAuthError] = useState("");
   const [clientID, setClientID] = useState("");
   const [savingClientID, setSavingClientID] = useState(false);
   const [teardownHistory, setTeardownHistory] = useState<TeardownSnapshot | null>(null);
+  const [installRun, setInstallRun] = useState<Awaited<ReturnType<typeof caller.getLatestRun>>>(null);
+  const [reloadBlocked, setReloadBlocked] = useState(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountId, setAccountId] = useState("");
   const [jurisdiction, setJurisdiction] = useState("default");
@@ -51,6 +57,7 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
   };
 
   const teardownActive = isActive(teardownHistory?.run.status);
+  const installActive = isActive(installRun?.status);
   const currentBucket = useMemo<ManagedBucket | null>(() => selectedBucket && accountId ? {
     accountId,
     jurisdiction: selectedBucket.jurisdiction ?? jurisdiction,
@@ -76,6 +83,27 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
     }
   }, [caller]);
 
+  const refreshLifecycle = useCallback(async () => {
+    const [teardown, install] = await Promise.all([refreshTeardown(), Promise.resolve(caller.getLatestRun({ action: "install" })).catch(() => null)]);
+    if (install) setInstallRun((current) => !current || current.id !== install.id || install.status >= current.status ? install : current);
+    if (install && isActive(install.status)) activeInstallIds.current.add(install.id);
+    if (install?.status === 2 && activeInstallIds.current.has(install.id)) {
+      activeInstallIds.current.delete(install.id);
+      const managerId = await caller.getManager().catch(() => "");
+      if (managerId && !reloadHost(managerId, "install", install.id)) setReloadBlocked(true);
+    }
+    if (teardown && isActive(teardown.run.status)) {
+      const state = await getCurrentManagerRedirect(caller);
+      if (state === "cleared") {
+        const managerId = await caller.getManager().catch(() => "");
+        if (managerId && !reloadHost(managerId, "teardown", teardown.run.id)) setReloadBlocked(true);
+      }
+    } else if (teardown?.run.status === 2) {
+      const managerId = await caller.getManager().catch(() => "");
+      if (managerId && !reloadHost(managerId, "teardown", teardown.run.id)) setReloadBlocked(true);
+    }
+  }, [caller, refreshTeardown, reloadHost]);
+
   const loadAccounts = useCallback(async () => {
     try {
       const list = await api.listAccounts();
@@ -100,7 +128,7 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
 
   useEffect(() => {
     let live = true;
-    void refreshTeardown();
+    void refreshLifecycle();
     void (async () => {
       try {
         const session = await api.session();
@@ -113,7 +141,15 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
       }
     })();
     return () => { live = false; };
-  }, [api, refreshTeardown]);
+  }, [api, refreshLifecycle]);
+
+  useEffect(() => {
+    if (!teardownActive && !installActive) return;
+    const poll = () => { void refreshLifecycle(); };
+    const timer = window.setInterval(poll, 3000);
+    window.addEventListener("focus", poll);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", poll); };
+  }, [teardownActive, installActive, refreshLifecycle]);
 
   useEffect(() => { void api.clientID().then(setClientID).catch((error) => setAuthError(message(error))); }, [api]);
 
@@ -123,8 +159,13 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
   }, [bridge]);
 
   useEffect(() => bridge.onEvent((event) => {
+    if (event.eventType === "run-start" && event.data.action === "install") {
+      activeInstallIds.current.add(event.data.id);
+      void refreshLifecycle();
+      return;
+    }
     if (event.eventType === "run-start" && event.data.action === "teardown") {
-      void refreshTeardown();
+      void refreshLifecycle();
       return;
     }
     if (event.eventType !== "run-update") return;
@@ -139,8 +180,8 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
         });
       }
     }
-    void refreshTeardown();
-  }), [bridge, refreshTeardown]);
+    void refreshLifecycle();
+  }), [bridge, refreshLifecycle]);
 
   useEffect(() => {
     if (auth === "signed-in") void loadAccounts();
@@ -314,19 +355,20 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
   };
 
   const teardown = async () => {
-    if (!window.confirm("Tear down the Cloudflare Manager service? Application tokens and Deploy Commander bucket records will be removed. Cloudflare buckets and domains will remain.")) return;
+    if (!window.confirm("Tear down the Cloudflare Manager service? Application access keys may remain active. Cloudflare buckets and domains will remain.")) return;
     await runAction("teardown", async () => {
-      await startTeardown(caller, api);
-      await refreshTeardown();
+      await startTeardown(caller);
+      await refreshLifecycle();
     });
   };
 
-  if (auth === "checking") return <main className="app-shell"><div className="loading-card">Loading Cloudflare Manager…</div></main>;
   return <main className="app-shell">
     <header className="topbar">
       <a className="brand" href="#"><span className="brand-mark">C</span><span>Cloudflare Manager<small>Deploy Commander</small></span></a>
-      <div className="topbar-actions"><span className={`status-pill ${auth === "signed-in" ? "status-live" : "status-neutral"}`}>{auth === "signed-in" ? "Cloudflare connected" : "Cloudflare sign-in needed"}</span><button className="text-button text-danger" disabled={teardownActive || auth !== "signed-in" || teardownHistory?.run.status === 2} onClick={teardown}>Tear down</button></div>
+      <div className="topbar-actions"><span className={`status-pill ${auth === "signed-in" ? "status-live" : "status-neutral"}`}>{auth === "signed-in" ? "Cloudflare connected" : "Cloudflare sign-in needed"}</span><button className="text-button text-danger" disabled={teardownActive || installActive || teardownHistory?.run.status === 2 && !(installRun && installRun.queued_at > teardownHistory.run.queued_at)} onClick={teardown}>Tear down</button></div>
     </header>
+
+    {reloadBlocked && <div className="page-error" role="alert"><span>Commander did not reload automatically.</span><button className="button button-secondary" onClick={() => window.parent.location.reload()}>Reload Commander</button></div>}
 
     <section className="hero">
       <div className="hero-copy"><div className="eyebrow">OBJECT STORAGE · EDGE DELIVERY</div><h1>R2 storage, under control.</h1><p>Manage Cloudflare buckets, connect custom domains, and issue scoped credentials for the applications that use them.</p></div>

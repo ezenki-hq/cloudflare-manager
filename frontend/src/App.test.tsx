@@ -40,6 +40,7 @@ function setup(apiOverrides: Partial<BackendAPI> = {}, callerOverrides: Partial<
   const caller = {
     getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "install" ? { id: "install-1", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" } : null),
     getManager: vi.fn().mockResolvedValue("manager-1"),
+    getManagers: vi.fn().mockResolvedValue({ items: [{ id: "manager-1", redirect: "https://app.example" }], offset: 0, limit: 100, count: 1 }),
     getMyResources: vi.fn().mockResolvedValue({ items: [], limit: 100, offset: 0, total: 0 }),
     getResource: vi.fn(),
     createResource: vi.fn().mockResolvedValue({ resource: { id: "resource-1" } }),
@@ -73,6 +74,33 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Cloudflare Manager interface", () => {
+  it.each([
+    ["checking", undefined],
+    ["signed-out", { session: vi.fn().mockResolvedValue({ authenticated: false }) }],
+    ["unavailable", { session: vi.fn().mockRejectedValue(new Error("Manager unavailable")) }],
+  ])("keeps Tear down available while Cloudflare auth is %s", async (_state, overrides) => {
+    const { api, bridge } = setup(overrides);
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
+    expect(await screen.findByRole("button", { name: "Tear down" })).toBeTruthy();
+  });
+
+  it("starts teardown without Cloudflare session or cleanup calls and warns that keys may remain", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const reloadHost = vi.fn().mockReturnValue(true);
+    const { api, bridge, caller } = setup({}, {
+      getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "install" ? { id: "install-1", action: "install", status: 2, queued_at: "", created_at: "", updated_at: "" } : null),
+      getRun: vi.fn().mockResolvedValue({ config: { runner: "ezenki/deploy-commander-runner:latest" } }),
+    });
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" reloadHost={reloadHost} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Tear down" }));
+    vi.mocked(api.session).mockClear();
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("access keys may remain active"));
+    await waitFor(() => expect(caller.start).toHaveBeenCalledWith({ action: "teardown", runner: "ezenki/deploy-commander-runner:latest", platform: "docker" }));
+    expect(api.session).not.toHaveBeenCalled();
+    expect(api.prepareTeardown).not.toHaveBeenCalled();
+    expect(caller.deleteResource).not.toHaveBeenCalled();
+  });
+
   it("shows the exact Cloudflare OAuth client settings and current-origin callback", async () => {
     const { api, bridge } = setup();
     render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
