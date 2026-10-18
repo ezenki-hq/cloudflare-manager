@@ -21,7 +21,7 @@ function mocks() {
     getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown"
       ? { id: "teardown-run", action: "teardown", status: 2, created_at: "", queued_at: "", updated_at: "" }
       : { id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }),
-    getRun: vi.fn().mockResolvedValue({ run: { id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }, config: { action: "install", manager: "manager", run: "install-run", runner: "ezenki/deploy-commander-runner@sha256:d3bdcc6470a469ca8344310e94292743e0020ef16bc097b6e9cc8b64d6c347c8", metadata: {} } }),
+    getRun: vi.fn().mockResolvedValue({ run: { id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }, config: { action: "install", manager: "manager", run: "install-run", runner: "ezenki/deploy-commander-runner:latest", metadata: {} } }),
     getRunUpdates: vi.fn().mockResolvedValue({ events: { events: [] }, logs: { items: [] } }),
     getRunEvents: vi.fn().mockResolvedValue({ events: [{ seq: 3, message: "Runner stopped" }], limit: 1, offset: 0, total: 3 }),
     start: vi.fn().mockImplementation(async (options: any) => { sequence.push("start"); return { id: "teardown-run", queued_at: "now", status: 0, options }; }),
@@ -42,7 +42,7 @@ describe("manager teardown", () => {
     expect(sequence).toEqual(["prepare", "resource", "start"]);
     expect(caller.start).toHaveBeenCalledOnce();
     const options = vi.mocked(caller.start).mock.calls[0]?.[0] as any;
-    expect(options).toEqual({ action: "teardown", runner: "ezenki/deploy-commander-runner@sha256:d3bdcc6470a469ca8344310e94292743e0020ef16bc097b6e9cc8b64d6c347c8", platform: "docker" });
+    expect(options).toEqual({ action: "teardown", runner: "ezenki/deploy-commander-runner:latest", platform: "docker" });
     expect(result.id).toBe("teardown-run");
   });
 

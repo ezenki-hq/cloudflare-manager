@@ -31,7 +31,7 @@ The installer is its own Deploy Commander project. Its only configurable build d
 | Variable | Purpose |
 | --- | --- |
 | `VITE_BACKEND_IMAGE` | Manager service image to install; defaults to `ezenki/cloudflare-manager:latest` |
-| `VITE_RUNNER_IMAGE` | Values-capable Deploy Commander runner; defaults to the multi-architecture image digest `ezenki/deploy-commander-runner@sha256:d3bdcc6470a469ca8344310e94292743e0020ef16bc097b6e9cc8b64d6c347c8` |
+| `VITE_RUNNER_IMAGE` | Values-capable Deploy Commander runner; defaults to `ezenki/deploy-commander-runner:latest` |
 
 The installer first checks for a valid connection to the reserved Commander resource. If one is missing, create it from the installer and approve it in Deploy Commander. Install becomes available after approval and the `COMMANDER_PASSWORD` secret check; the Install action rechecks the approved connection before starting the run. The optional OAuth client ID can be saved from the installer or frontend settings. The OAuth callback is the manager's HTTPS origin plus `/auth/callback` and must be registered on the Cloudflare client.
 
@@ -60,7 +60,7 @@ npm run build
 
 The Go service image contains only `frontend/dist` at `/app/frontend/dist`; it does not contain or publish the installer. The Go service and frontend assets run as UID 65532 on `gcr.io/distroless/static-debian12:nonroot`. Build a local image with `docker build -t cloudflare-manager:local .`. `build.sh` builds and pushes `ezenki/cloudflare-manager:latest` for the default platforms. Set `IMAGE`, `TAG`, or `PLATFORMS` to change the image name, tag, or target platforms.
 
-Keep the runner pinned to a version tag or SHA-256 digest, and check the supported runner reference in Deploy Commander staging before production use.
+The installer defaults to `latest` tags for both images. It accepts tagged image references, including `latest`, and SHA-256 digests.
 
 ## Install and operate
 
@@ -101,7 +101,7 @@ Override the installer image defaults with `VITE_BACKEND_IMAGE` or `VITE_RUNNER_
 
 Before live use, verify in Deploy Commander staging with disposable Cloudflare resources:
 
-1. Install with pinned manager and supported runner images; confirm the run waits for health before redirecting.
+1. Install with the latest manager and supported runner image tags; confirm the run waits for health before redirecting.
 2. Complete OAuth in the popup and verify the manager session. Confirm cookies are host-only, Secure, HttpOnly, and expire with the access token.
 3. List accounts and buckets; create and delete an empty test bucket; attach and detach a test custom domain.
 4. Provision a read-only and read/write application connection; verify the token policy names exactly one bucket; then revoke and confirm the token and both connection secrets are removed.

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RPCCaller, RunItem } from "@ezenki/deploy-commander-installer-interface";
 import { buildInstallRun, installationState, startInstall, type InstallInput } from "./installer";
 
-const input: InstallInput = { backendImage: "ghcr.io/ezenki/cloudflare-manager:latest", runnerImage: "ezenki/deploy-commander-runner@sha256:d3bdcc6470a469ca8344310e94292743e0020ef16bc097b6e9cc8b64d6c347c8" };
+const input: InstallInput = { backendImage: "ezenki/cloudflare-manager:latest", runnerImage: "ezenki/deploy-commander-runner:latest" };
 const commander = { resourceId: "commander-resource", connectionId: "connection-id", managerAPI: "http://commander:6080/api/v1" };
 const run = (action: string, status: number, queued_at: string): RunItem => ({ id: `${action}-${status}`, action, status, queued_at, created_at: queued_at, updated_at: queued_at });
 
@@ -18,8 +18,8 @@ describe("initial installer", () => {
     expect(JSON.stringify(options)).not.toContain("oauth-client"); expect(JSON.stringify(options)).not.toContain("COMMANDER_ORIGIN");
   });
 
-  it("requires a pinned runner image and rejects missing Commander inputs", () => {
-    expect(() => buildInstallRun({ ...input, runnerImage:"ezenki/deploy-commander-runner:latest", managerId:"manager", commander })).toThrow(/runner image.*version tag or SHA-256 digest/i);
+  it("accepts latest runner tags and rejects missing Commander inputs", () => {
+    expect(buildInstallRun({ ...input, managerId:"manager", commander }).runner).toBe("ezenki/deploy-commander-runner:latest");
     expect(() => buildInstallRun({ ...input, managerId:"", commander })).toThrow(/manager ID/i);
     expect(() => buildInstallRun({ ...input, managerId:"manager", commander:{...commander,connectionId:""} })).toThrow(/connection ID/i);
   });

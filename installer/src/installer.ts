@@ -6,8 +6,8 @@ export interface InstallInput { backendImage: string; runnerImage: string }
 
 export function buildInstallRun(input: InstallInput & { managerId: string; commander: CommanderConnection }): StartRunOptions {
   const managerId = requireString(input.managerId, "manager ID");
-  requireImageReference(input.backendImage, "backend image", true);
-  requireImageReference(input.runnerImage, "runner image", false);
+  requireImageReference(input.backendImage, "backend image");
+  requireImageReference(input.runnerImage, "runner image");
   const { resourceId, connectionId, managerAPI } = input.commander;
   requireString(resourceId, "Commander resource ID"); requireString(connectionId, "Commander connection ID"); requireString(managerAPI, "Commander API URL");
   const alias = `cloudflare-manager-${managerId}`;
@@ -78,10 +78,10 @@ export async function startInstall(caller: RPCCaller, input: InstallInput, appro
 
 function isActive(status: number | undefined): boolean { return status === 0 || status === 1; }
 function parseRunTime(run: RunItem): number { const timestamp = Date.parse(run.queued_at); if (!Number.isFinite(timestamp)) throw new Error("Install and teardown run timestamps are invalid"); return timestamp; }
-function requireImageReference(value: string, label: string, allowLatest: boolean): void {
+function requireImageReference(value: string, label: string): void {
   if (!value.trim() || /\s/.test(value)) throw new Error(`${label} is required`);
   if (/@sha256:[a-f0-9]{64}$/.test(value)) return;
   const lastPart = value.slice(value.lastIndexOf("/") + 1), separator = lastPart.lastIndexOf(":");
-  if (separator <= 0 || (!allowLatest && lastPart.slice(separator + 1) === "latest")) throw new Error(`${label} must use a version tag or SHA-256 digest`);
+  if (separator <= 0) throw new Error(`${label} must use a tag or SHA-256 digest`);
 }
 function requireString(value: string, label: string): string { const result = value.trim(); if (!result || /[\r\n]/.test(result)) throw new Error(`${label} is required`); return result; }

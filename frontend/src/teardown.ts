@@ -14,8 +14,8 @@ export async function startTeardown(
   if (!install) throw new Error("No install run is available to identify the runner image");
   const savedInstall = await caller.getRun(install.id);
   const runnerImage = savedInstall.config.runner;
-  if (typeof runnerImage !== "string" || !isPinnedImage(runnerImage)) {
-    throw new Error("The installed runner image is missing or unpinned");
+  if (typeof runnerImage !== "string" || !hasImageTagOrDigest(runnerImage)) {
+    throw new Error("The installed runner image is missing or has no tag or SHA-256 digest");
   }
 
   const owned = await listAllBucketResources(caller);
@@ -61,6 +61,6 @@ async function listAllBucketResources(caller: RPCCaller): Promise<Array<{ id: st
   throw new Error("Too many bucket resources to tear down safely");
 }
 
-function isPinnedImage(value: string): boolean {
-  return /@sha256:[a-f0-9]{64}$/.test(value) || (/:[^/:]+$/.test(value) && !value.endsWith(":latest"));
+function hasImageTagOrDigest(value: string): boolean {
+  return /@sha256:[a-f0-9]{64}$/.test(value) || /:[^/:]+$/.test(value);
 }
