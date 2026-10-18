@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { RunItem } from "@ezenki/deploy-commander-installer-interface";
 import type { Account, BackendAPI, Bucket, BucketPage, Domain, Zone } from "./api";
 import type { CommanderBridge } from "./commander";
 import { reloadCurrentInterface } from "./hostNavigation";
 import { getCurrentManagerRedirect } from "./managerRedirect";
 import { provisionConnection, revokeConnection } from "./connections";
 import { BucketDetail } from "./components/BucketDetail";
+import { TeardownPage } from "./components/TeardownPage";
 import { findBucketResource, registerBucket, removeBucketRecord, setBucketPrimaryDomain, type ManagedBucket } from "./resources";
 import { loadLatestTeardown, type TeardownSnapshot } from "./runHistory";
 import { startTeardown } from "./teardown";
+import { managerPageFromPath, navigateManagerPage, type ManagerPage } from "./managerPage";
 
 interface AppProps {
   bridge: CommanderBridge;
@@ -29,7 +32,10 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
   const [clientID, setClientID] = useState("");
   const [savingClientID, setSavingClientID] = useState(false);
   const [teardownHistory, setTeardownHistory] = useState<TeardownSnapshot | null>(null);
-  const [installRun, setInstallRun] = useState<Awaited<ReturnType<typeof caller.getLatestRun>>>(null);
+  const [installRun, setInstallRun] = useState<RunItem | null>(null);
+  const [managerPage, setManagerPage] = useState<ManagerPage>(() => managerPageFromPath(window.location.pathname));
+  const [teardownStarting, setTeardownStarting] = useState(false);
+  const [teardownStartError, setTeardownStartError] = useState("");
   const [reloadBlocked, setReloadBlocked] = useState(false);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [accountId, setAccountId] = useState("");
@@ -72,6 +78,10 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
       if (version !== teardownRefreshVersion.current) return null;
       setTeardownHistory((current) => {
         if (!snapshot) return current?.run.status === 0 || current?.run.status === 1 ? current : null;
+        if (current && current.run.id !== snapshot.run.id) {
+          if (isLaterRun(current.run, snapshot.run)) return current;
+          if (isActive(current.run.status) && !isLaterRun(snapshot.run, current.run)) return current;
+        }
         if (current?.run.id === snapshot.run.id && current.lastEvent && (!snapshot.lastEvent || current.lastEvent.seq > snapshot.lastEvent.seq)) {
           return { ...snapshot, lastEvent: current.lastEvent };
         }
@@ -86,18 +96,20 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
   const refreshLifecycle = useCallback(async () => {
     const [teardown, install] = await Promise.all([refreshTeardown(), Promise.resolve(caller.getLatestRun({ action: "install" })).catch(() => null)]);
     if (install) setInstallRun((current) => !current || current.id !== install.id || install.status >= current.status ? install : current);
-    if (install?.status === 2) {
+    if (install?.status === 2 && !isLaterRun(install, teardown?.run)) {
       const managerId = await caller.getManager().catch(() => "");
       const redirect = await getCurrentManagerRedirect(caller);
-        if (managerId && redirect === "set" && !reloadCurrentInterface(managerId, "install", install.id, reloadPage)) setReloadBlocked(true);
+      if (managerId && redirect === "set" && !reloadCurrentInterface(managerId, "install", install.id, reloadPage)) setReloadBlocked(true);
     }
     if (teardown && isActive(teardown.run.status)) {
       const state = await getCurrentManagerRedirect(caller);
       if (state === "cleared") {
+        navigateManagerPage("home", "replace");
         const managerId = await caller.getManager().catch(() => "");
         if (managerId && !reloadCurrentInterface(managerId, "teardown", teardown.run.id, reloadPage)) setReloadBlocked(true);
       }
-    } else if (teardown?.run.status === 2) {
+    } else if (teardown?.run.status === 2 && !isLaterRun(install, teardown.run)) {
+      navigateManagerPage("home", "replace");
       const managerId = await caller.getManager().catch(() => "");
       if (managerId && !reloadCurrentInterface(managerId, "teardown", teardown.run.id, reloadPage)) setReloadBlocked(true);
     }
@@ -141,6 +153,12 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
     })();
     return () => { live = false; };
   }, [api, refreshLifecycle]);
+
+  useEffect(() => {
+    const onPopState = () => setManagerPage(managerPageFromPath(window.location.pathname));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
 
   useEffect(() => {
     if (!teardownActive && !installActive) return;
@@ -352,22 +370,40 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
     finally { setBusyAction(""); }
   };
 
+  const showTeardownPage = () => {
+    navigateManagerPage("teardown");
+    setManagerPage("teardown");
+    setTeardownStartError("");
+  };
+
+  const returnToManager = () => {
+    navigateManagerPage("home", "replace");
+    setManagerPage("home");
+  };
+
   const teardown = async () => {
-    if (!window.confirm("Tear down the Cloudflare Manager service? Application access keys may remain active. Cloudflare buckets and domains will remain.")) return;
-    await runAction("teardown", async () => {
-      await startTeardown(caller);
+    setTeardownStarting(true);
+    setTeardownStartError("");
+    setReloadBlocked(false);
+    try {
+      const started = await startTeardown(caller);
+      setTeardownHistory({ run: { id: started.id, action: "teardown", status: started.status, queued_at: started.queued_at, created_at: started.queued_at, updated_at: started.queued_at }, lastEvent: null });
       await refreshLifecycle();
-    });
+    } catch (error) {
+      setTeardownStartError(message(error));
+    } finally {
+      setTeardownStarting(false);
+    }
   };
 
   return <main className="app-shell">
     <header className="topbar">
-      <a className="brand" href="#"><span className="brand-mark">C</span><span>Cloudflare Manager<small>Deploy Commander</small></span></a>
-      <div className="topbar-actions"><span className={`status-pill ${auth === "signed-in" ? "status-live" : "status-neutral"}`}>{auth === "signed-in" ? "Cloudflare connected" : "Cloudflare sign-in needed"}</span><button className="text-button text-danger" disabled={teardownActive || installActive || teardownHistory?.run.status === 2 && !(installRun && installRun.queued_at > teardownHistory.run.queued_at)} onClick={teardown}>Tear down</button></div>
+      <a className="brand" href="/" onClick={(event) => { event.preventDefault(); returnToManager(); }}><span className="brand-mark">C</span><span>Cloudflare Manager<small>Deploy Commander</small></span></a>
+      <div className="topbar-actions"><span className={`status-pill ${auth === "signed-in" ? "status-live" : "status-neutral"}`}>{auth === "signed-in" ? "Cloudflare connected" : "Cloudflare sign-in needed"}</span>{managerPage === "home" && <button className="text-button text-danger" onClick={showTeardownPage}>Tear down</button>}</div>
     </header>
 
+    {managerPage === "teardown" ? <TeardownPage run={teardownHistory} installRun={installRun} starting={teardownStarting} startError={teardownStartError} reloadBlocked={reloadBlocked} onBack={returnToManager} onStart={teardown} onReload={reloadPage} /> : <>
     {reloadBlocked && <div className="page-error" role="alert"><span>The manager did not reload automatically.</span><button className="button button-secondary" onClick={reloadPage}>Reload interface</button></div>}
-
     <section className="hero">
       <div className="hero-copy"><div className="eyebrow">OBJECT STORAGE · EDGE DELIVERY</div><h1>R2 storage, under control.</h1><p>Manage Cloudflare buckets, connect custom domains, and issue scoped credentials for the applications that use them.</p></div>
       <div className="hero-stat"><span>YOUR ACCESS</span><strong>{auth === "signed-in" ? "Ready" : "Sign-in required"}</strong><small>OAuth stays with the signed-in user.</small></div>
@@ -393,8 +429,6 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
         <div className="oauth-settings-actions"><button className="button button-secondary" disabled={savingClientID}>{savingClientID ? "Saving…" : "Save client ID"}</button><a className="button button-quiet" href="https://dash.cloudflare.com/?to=/:account/oauth-clients" target="_blank" rel="noopener noreferrer">Create or get a client ID ↗</a></div>
       </form>
     </section>
-
-    {teardownHistory && <section className="run-summary" aria-label="teardown run status"><div><span className="muted-label">Latest teardown run</span><strong className={`run-status run-status-${teardownHistory.run.status}`}>{runStatus(teardownHistory.run.status)}</strong><span className="run-id">{teardownHistory.run.id}</span></div><div className="run-messages"><p>{teardownHistory.lastEvent?.message ?? "Run updates will appear here."}</p></div></section>}
 
     {auth !== "signed-in" ? <section className="panel auth-panel">
       <div className="panel-kicker">CLOUDFLARE AUTHORIZATION</div>
@@ -439,12 +473,18 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
         </div>}
       </section>
     </>}
+    </>}
     <footer className="footer"><span>Cloudflare owns your buckets and domains.</span><span>Deploy Commander stores resource records and application secrets.</span></footer>
   </main>;
 }
 
 function isActive(status?: number): boolean { return status === 0 || status === 1; }
-function runStatus(status: number): string { return ["Queued", "Running", "Done", "Failed"][status] ?? "Unknown"; }
+function isLaterRun(install: RunItem | null, teardown?: RunItem): boolean {
+  if (!install || !teardown) return false;
+  const installAt = Date.parse(install.queued_at);
+  const teardownAt = Date.parse(teardown.queued_at);
+  return Number.isFinite(installAt) && Number.isFinite(teardownAt) && installAt > teardownAt;
+}
 function statusOf(error: unknown): number | undefined { return isRecord(error) && typeof error.status === "number" ? error.status : undefined; }
 function message(error: unknown): string { return error instanceof Error ? error.message : "The request could not be completed"; }
 function isRecord(value: unknown): value is Record<string, any> { return typeof value === "object" && value !== null && !Array.isArray(value); }

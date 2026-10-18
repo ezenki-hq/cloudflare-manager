@@ -10,8 +10,8 @@ function mocks() {
     getConnections: vi.fn(),
     deleteConnection: vi.fn(),
     getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown"
-      ? { id: "teardown-run", action: "teardown", status: 2, created_at: "", queued_at: "", updated_at: "" }
-      : { id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }),
+      ? null
+      : { id: "install-run", action: "install", status: 2, created_at: "2026-10-16T11:00:00Z", queued_at: "2026-10-16T11:00:00Z", updated_at: "2026-10-16T11:00:00Z" }),
     getRun: vi.fn().mockResolvedValue({ run: { id: "install-run", action: "install", status: 2, created_at: "", queued_at: "", updated_at: "" }, config: { action: "install", manager: "manager", run: "install-run", runner: "ezenki/deploy-commander-runner:latest", metadata: {} } }),
     getRunUpdates: vi.fn().mockResolvedValue({ events: { events: [] }, logs: { items: [] } }),
     getRunEvents: vi.fn().mockResolvedValue({ events: [{ seq: 3, message: "Runner stopped" }], limit: 1, offset: 0, total: 3 }),
@@ -43,6 +43,23 @@ describe("manager teardown", () => {
     expect(caller.start).not.toHaveBeenCalled();
   });
 
+  it("blocks another teardown after a completed teardown with no later install", async () => {
+    const { caller } = mocks();
+    vi.mocked(caller.getLatestRun).mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown"
+      ? { id: "teardown-done", action: "teardown", status: 2, created_at: "", queued_at: "2026-10-16T10:00:00Z", updated_at: "" }
+      : { id: "install-old", action: "install", status: 2, created_at: "", queued_at: "2026-10-16T09:00:00Z", updated_at: "" });
+    await expect(startTeardown(caller)).rejects.toThrow("already been torn down");
+    expect(caller.start).not.toHaveBeenCalled();
+  });
+
+  it("allows teardown after a successful installation newer than the completed teardown", async () => {
+    const { caller } = mocks();
+    vi.mocked(caller.getLatestRun).mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown"
+      ? { id: "teardown-old", action: "teardown", status: 2, created_at: "", queued_at: "2026-10-16T10:00:00Z", updated_at: "" }
+      : { id: "install-new", action: "install", status: 2, created_at: "", queued_at: "2026-10-16T11:00:00Z", updated_at: "" });
+    await expect(startTeardown(caller)).resolves.toMatchObject({ id: "teardown-run" });
+  });
+
   it("requires a saved install run", async () => {
     const { caller } = mocks();
     vi.mocked(caller.getLatestRun).mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown" ? null : null);
@@ -67,6 +84,7 @@ describe("manager teardown", () => {
 
   it("recovers the latest durable teardown event after reload", async () => {
     const { caller } = mocks();
+    vi.mocked(caller.getLatestRun).mockResolvedValueOnce({ id: "teardown-run", action: "teardown", status: 1, created_at: "", queued_at: "", updated_at: "" });
     const history = await loadLatestTeardown(caller);
     expect(caller.getLatestRun).toHaveBeenCalledWith({ action: "teardown" });
     expect(caller.getRunEvents).toHaveBeenCalledWith({ run_id: "teardown-run", limit: 1, order: "desc" });

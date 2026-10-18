@@ -71,9 +71,28 @@ function setup(apiOverrides: Partial<BackendAPI> = {}, callerOverrides: Partial<
 beforeEach(() => {
   vi.restoreAllMocks();
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); window.history.replaceState(null, "", "/"); });
 
 describe("Cloudflare Manager interface", () => {
+  it("renders the teardown page on a direct route load when the manager API is unavailable", async () => {
+    window.history.replaceState(null, "", "/teardown?context=commander%2F1");
+    const { api, bridge } = setup({ session: vi.fn().mockRejectedValue(new Error("Manager unavailable")) });
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
+    expect(await screen.findByRole("heading", { name: "Tear down Cloudflare Manager" })).toBeTruthy();
+    expect(screen.queryByText("R2 storage, under control.")).toBeNull();
+  });
+
+  it("opens and leaves the teardown page through manager history navigation", async () => {
+    const { api, bridge } = setup();
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Tear down" }));
+    expect(window.location.pathname).toBe("/teardown");
+    expect(await screen.findByRole("heading", { name: "Tear down Cloudflare Manager" })).toBeTruthy();
+    window.history.pushState(null, "", "/?context=commander%2F1");
+    fireEvent(window, new PopStateEvent("popstate"));
+    expect(await screen.findByText("R2 storage, under control.")).toBeTruthy();
+  });
+
   it.each([
     ["checking", undefined],
     ["signed-out", { session: vi.fn().mockResolvedValue({ authenticated: false }) }],
@@ -85,52 +104,60 @@ describe("Cloudflare Manager interface", () => {
   });
 
   it("starts teardown without Cloudflare session or cleanup calls and warns that keys may remain", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirm = vi.spyOn(window, "confirm");
     const reloadPage = vi.fn().mockReturnValue(true);
     const { api, bridge, caller } = setup({}, {
       getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "install" ? { id: "install-1", action: "install", status: 2, queued_at: "", created_at: "", updated_at: "" } : null),
       getRun: vi.fn().mockResolvedValue({ config: { runner: "ezenki/deploy-commander-runner:latest" } }),
     });
     render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" reloadPage={reloadPage} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Tear down" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: "Tear down" }))[0]);
+    expect(await screen.findByRole("heading", { name: "Tear down Cloudflare Manager" })).toBeTruthy();
+    expect(screen.getByText(/application access keys may remain active/i)).toBeTruthy();
+    fireEvent.change(screen.getByRole("textbox", { name: /type cloudflare to confirm/i }), { target: { value: "cloudflare" } });
     vi.mocked(api.session).mockClear();
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("access keys may remain active"));
+    fireEvent.click(screen.getByRole("button", { name: "Tear down" }));
+    expect(confirm).not.toHaveBeenCalled();
     await waitFor(() => expect(caller.start).toHaveBeenCalledWith({ action: "teardown", runner: "ezenki/deploy-commander-runner:latest", platform: "docker" }));
     expect(api.session).not.toHaveBeenCalled();
     expect(api.prepareTeardown).not.toHaveBeenCalled();
     expect(caller.deleteResource).not.toHaveBeenCalled();
   });
 
-  it("keeps Tear down disabled during an active run and honors a canceled confirmation", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  it("keeps the teardown form disabled during an active run", async () => {
     const { api, bridge, caller } = setup({}, {
       getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown" ? { id: "teardown-1", action: "teardown", status: 1, created_at: "", queued_at: "", updated_at: "" } : null),
     });
     render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" reloadPage={vi.fn().mockReturnValue(true)} />);
-    const button = await screen.findByRole("button", { name: "Tear down" }) as HTMLButtonElement;
+    fireEvent.click((await screen.findAllByRole("button", { name: "Tear down" }))[0]);
+    fireEvent.change(await screen.findByRole("textbox", { name: /type cloudflare to confirm/i }), { target: { value: "cloudflare" } });
+    const button = screen.getByRole("button", { name: "Tear down" }) as HTMLButtonElement;
     expect(button.disabled).toBe(true);
-    expect(confirm).not.toHaveBeenCalled();
     expect(caller.start).not.toHaveBeenCalled();
   });
 
   it("shows a Commander start failure and allows retry", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirm = vi.spyOn(window, "confirm");
     const { api, bridge, caller } = setup({}, {
       getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "install" ? { id: "install-1", action: "install", status: 2, queued_at: "", created_at: "", updated_at: "" } : null),
       getRun: vi.fn().mockResolvedValue({ config: { runner: "ezenki/deploy-commander-runner:latest" } }),
       start: vi.fn().mockRejectedValueOnce(new Error("Commander unavailable")).mockResolvedValue({ id: "teardown-1", queued_at: "now", status: 0 }),
     });
     render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" reloadPage={vi.fn().mockReturnValue(true)} />);
-    const button = await screen.findByRole("button", { name: "Tear down" });
+    fireEvent.click((await screen.findAllByRole("button", { name: "Tear down" }))[0]);
+    fireEvent.change(await screen.findByRole("textbox", { name: /type cloudflare to confirm/i }), { target: { value: "cloudflare" } });
+    const button = screen.getByRole("button", { name: "Tear down" });
     fireEvent.click(button);
-    expect((await screen.findByRole("alert")).textContent).toContain("Commander unavailable");
+    expect((await screen.findByRole("status")).textContent).toContain("Commander unavailable");
     expect((button as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(button);
     await waitFor(() => expect(caller.start).toHaveBeenCalledTimes(2));
+    expect(confirm).not.toHaveBeenCalled();
   });
 
   it("reloads Commander once when the active teardown redirect clears", async () => {
     sessionStorage.clear();
+    window.history.replaceState(null, "", "/teardown");
     const reload = vi.fn();
     const teardown = { id: "teardown-1", action: "teardown", status: 1, created_at: "", queued_at: "", updated_at: "" };
     const { api, bridge, handlers } = setup({}, {
@@ -140,6 +167,7 @@ describe("Cloudflare Manager interface", () => {
     const reloadPage = reload;
     render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" reloadPage={reloadPage} />);
     await waitFor(() => expect(reload).toHaveBeenCalledOnce());
+    expect(window.location.pathname).toBe("/");
     handlers.forEach((handler) => handler({ type: "event", eventType: "run-update", data: { type: "event", payload: { run_id: "teardown-1", seq: 2, message: "Redirect cleared" } } }));
     await waitFor(() => expect(reload).toHaveBeenCalledOnce());
   });
@@ -159,23 +187,26 @@ describe("Cloudflare Manager interface", () => {
   });
 
   it("stays on the manager after teardown fails before redirect clearance", async () => {
+    window.history.replaceState(null, "", "/teardown");
     const reloadPage = vi.fn();
     const { api, bridge } = setup({}, {
       getLatestRun: vi.fn().mockResolvedValue({ id: "teardown-1", action: "teardown", status: 3, created_at: "", queued_at: "", updated_at: "" }),
     });
     render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" reloadPage={reloadPage} />);
-    await screen.findByLabelText("teardown run status");
+    expect((await screen.findByRole("status")).textContent).toContain("Teardown failed");
     expect(reloadPage).not.toHaveBeenCalled();
   });
 
   it("enables teardown again after a newer install follows an old teardown", async () => {
+    window.history.replaceState(null, "", "/teardown");
     const { api, bridge } = setup({}, {
       getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown"
         ? { id: "teardown-old", action: "teardown", status: 2, queued_at: "2026-10-16T10:00:00Z", created_at: "", updated_at: "" }
         : { id: "install-new", action: "install", status: 2, queued_at: "2026-10-16T11:00:00Z", created_at: "", updated_at: "" }),
     });
     render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" reloadPage={vi.fn().mockReturnValue(true)} />);
-    await screen.findByLabelText("teardown run status");
+    await screen.findByRole("heading", { name: "Tear down Cloudflare Manager" });
+    fireEvent.change(screen.getByRole("textbox", { name: /type cloudflare to confirm/i }), { target: { value: "cloudflare" } });
     await waitFor(() => expect((screen.getByRole("button", { name: "Tear down" }) as HTMLButtonElement).disabled).toBe(false));
   });
 
@@ -262,7 +293,8 @@ describe("Cloudflare Manager interface", () => {
     expect(screen.queryByRole("button", { name: /start installation/i })).toBeNull();
   });
 
-  it("shows and live-updates the latest teardown event", async () => {
+  it("shows and live-updates teardown status on the dedicated page", async () => {
+    window.history.replaceState(null, "", "/teardown");
     const teardown = { id: "teardown-1", action: "teardown", status: 1, created_at: "", queued_at: "", updated_at: "" };
     const { api, bridge, caller, handlers } = setup({}, {
       getLatestRun: vi.fn().mockImplementation(async ({ action }: { action?: string } = {}) => action === "teardown" ? teardown : null),
@@ -284,10 +316,11 @@ describe("Cloudflare Manager interface", () => {
     expect(caller.getRunEvents).toHaveBeenCalledWith({ run_id: "teardown-1", limit: 1, order: "desc" });
   });
 
-  it("does not let an older teardown refresh replace a newer run", async () => {
+  it("does not let an older teardown refresh replace a newer status message", async () => {
+    window.history.replaceState(null, "", "/teardown");
     const firstRefresh = deferred<any>();
     const secondRefresh = deferred<any>();
-    const oldRun = { id: "teardown-old", action: "teardown", status: 2, created_at: "", queued_at: "2026-10-16T10:00:00Z", updated_at: "" };
+    const oldRun = { id: "teardown-old", action: "teardown", status: 1, created_at: "", queued_at: "2026-10-16T10:00:00Z", updated_at: "" };
     const newRun = { id: "teardown-new", action: "teardown", status: 1, created_at: "", queued_at: "2026-10-16T11:00:00Z", updated_at: "" };
     const { api, bridge, caller, handlers } = setup({}, {
       getLatestRun: vi.fn().mockResolvedValueOnce(oldRun),
@@ -305,7 +338,7 @@ describe("Cloudflare Manager interface", () => {
     secondRefresh.resolve(newRun);
     expect(await screen.findByText("Event for teardown-new")).toBeTruthy();
     firstRefresh.resolve(oldRun);
-    await waitFor(() => expect(screen.getByLabelText("teardown run status").textContent).toContain("teardown-new"));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Event for teardown-new"));
     expect(screen.queryByText("Event for teardown-old")).toBeNull();
   });
 });

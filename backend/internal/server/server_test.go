@@ -128,6 +128,19 @@ func TestSafePreflightAndStaticHealthExceptions(t *testing.T) {
 	}
 }
 
+func TestStaticHandlerServesTeardownRouteFromIndex(t *testing.T) {
+	staticDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(staticDir, "index.html"), []byte("manager interface"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := staticHandler(staticDir)
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, httptest.NewRequest(http.MethodGet, "/teardown?context=commander%2F1", nil))
+	if resp.Code != http.StatusOK || resp.Body.String() != "manager interface" {
+		t.Fatalf("status=%d body=%q", resp.Code, resp.Body.String())
+	}
+}
+
 func TestOAuthStartIsSignedPostAndRequiresCookieForSession(t *testing.T) {
 	h := NewHandler(Config{ManagerID: testManager, JWTSecret: testKey}, nil, cloudflare.NewClient("https://api.cloudflare.com", nil), nil)
 	for _, path := range []string{"/auth/start", "/api/session"} {

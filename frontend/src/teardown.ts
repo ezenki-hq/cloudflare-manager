@@ -1,9 +1,11 @@
 import type { RPCCaller } from "@ezenki/deploy-commander-installer-interface";
 
 export async function startTeardown(caller: RPCCaller): Promise<Awaited<ReturnType<RPCCaller["start"]>>> {
-  await ensureNoActiveTeardown(caller);
-
-  const install = await caller.getLatestRun({ action: "install" });
+  const [teardown, install] = await Promise.all([
+    caller.getLatestRun({ action: "teardown" }),
+    caller.getLatestRun({ action: "install" }),
+  ]);
+  ensureTeardownCanStart(teardown, install);
   if (!install) throw new Error("No install run is available to identify the runner image");
   const savedInstall = await caller.getRun(install.id);
   const runnerImage = savedInstall.config.runner;
@@ -14,12 +16,20 @@ export async function startTeardown(caller: RPCCaller): Promise<Awaited<ReturnTy
   return caller.start({ action: "teardown", runner: runnerImage, platform: "docker" });
 }
 
-async function ensureNoActiveTeardown(caller: RPCCaller): Promise<void> {
-  const teardown = await caller.getLatestRun({ action: "teardown" });
-  const install = await caller.getLatestRun({ action: "install" });
+function ensureTeardownCanStart(
+  teardown: Awaited<ReturnType<RPCCaller["getLatestRun"]>>,
+  install: Awaited<ReturnType<RPCCaller["getLatestRun"]>>,
+): void {
   for (const run of [teardown, install]) {
     if (run && (run.status === 0 || run.status === 1)) {
       throw new Error(`A ${run.action} run is already queued or running`);
+    }
+  }
+  if (teardown?.status === 2) {
+    const teardownTime = Date.parse(teardown.queued_at ?? "");
+    const installTime = Date.parse(install?.queued_at ?? "");
+    if (!Number.isFinite(teardownTime) || !Number.isFinite(installTime) || installTime <= teardownTime) {
+      throw new Error("The manager has already been torn down. Install it again before starting another teardown.");
     }
   }
 }
