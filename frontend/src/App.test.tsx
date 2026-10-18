@@ -73,6 +73,21 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Cloudflare Manager interface", () => {
+  it("shows the exact Cloudflare OAuth client settings and current-origin callback", async () => {
+    const { api, bridge } = setup();
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
+    const guide = await screen.findByLabelText("Cloudflare OAuth client configuration");
+    expect(guide.textContent).toContain(`${window.location.origin}/auth/callback`);
+    expect(guide.textContent).toContain("Client nameCloudflare Manager");
+    expect(guide.textContent).toContain("Response typeCode");
+    expect(guide.textContent).toContain("Grant typeAuthorization Code");
+    expect(guide.textContent).toContain("Token authentication methodNone (PKCE)");
+    expect(guide.textContent).toContain("Redirect URLs");
+    expect(guide.textContent).toContain("Account Read, Zone Read, Workers R2 Storage Read, Workers R2 Storage Write, Account API Tokens Read, and Account API Tokens Write");
+    expect(guide.textContent).toContain("Copy the client ID Cloudflare gives you into the field below");
+    expect(guide.textContent).toContain(`set Client URL to ${window.location.origin}`);
+  });
+
   it("shows user initiated Cloudflare sign-in when the session is missing", async () => {
     const popup = { close: vi.fn(), location: { href: "" } } as unknown as Window;
     vi.spyOn(window, "open").mockReturnValue(popup);

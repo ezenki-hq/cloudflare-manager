@@ -33,7 +33,7 @@ The installer is its own Deploy Commander project. Its only configurable build d
 | `VITE_BACKEND_IMAGE` | Manager service image to install; defaults to `ezenki/cloudflare-manager:latest` |
 | `VITE_RUNNER_IMAGE` | Values-capable Deploy Commander runner; defaults to the multi-architecture image digest `ezenki/deploy-commander-runner@sha256:d3bdcc6470a469ca8344310e94292743e0020ef16bc097b6e9cc8b64d6c347c8` |
 
-The installer has one Install action. It discovers the reserved Commander manager and resource, requests approval for a Commander connection when needed, verifies the connection secret, and starts the run. The optional OAuth client ID can be saved from the installer or frontend settings. The OAuth callback is the manager's HTTPS origin plus `/auth/callback` and must be registered on the Cloudflare client.
+The installer first checks for a valid connection to the reserved Commander resource. If one is missing, create it from the installer and approve it in Deploy Commander. Install becomes available after approval and the `COMMANDER_PASSWORD` secret check; the Install action rechecks the approved connection before starting the run. The optional OAuth client ID can be saved from the installer or frontend settings. The OAuth callback is the manager's HTTPS origin plus `/auth/callback` and must be registered on the Cloudflare client.
 
 ```sh
 cd installer
@@ -64,7 +64,7 @@ Keep the runner pinned to a version tag or SHA-256 digest, and check the support
 
 ## Install and operate
 
-Open the published installer inside Deploy Commander and click Install. It displays the run status and latest structured install event, including after a reload. The runner configures the service with its approved Commander connection, waits for the `/healthz` health check, and sets the redirect to the healthy service.
+Open the published installer inside Deploy Commander, create and approve the Commander connection if needed, then click Install. It displays the run status and latest structured install event, including after a reload. The runner configures the service with its approved Commander connection, waits for the `/healthz` health check, and sets the redirect to the healthy service.
 
 Use an HTTPS custom hostname for the manager. The OAuth callback is derived from the request host, and the protected state cookie carries that redirect through callback. The host-only, `SameSite=Lax` access cookie must be available to the manager frontend. A raw internal HTTP alias works for runner-to-service traffic and is not the public OAuth origin.
 

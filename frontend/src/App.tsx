@@ -335,6 +335,19 @@ export function App({ bridge, api, backendOrigin }: AppProps) {
 
     <section className="panel oauth-settings" aria-labelledby="oauth-settings-title">
       <div className="panel-heading"><div><h2 id="oauth-settings-title">Cloudflare OAuth</h2><p>Set the public client ID used when connecting a Cloudflare account.</p></div></div>
+      <div className="oauth-setup" aria-label="Cloudflare OAuth client configuration">
+        <p>In Cloudflare, create an OAuth client with these settings:</p>
+        <dl>
+          <div><dt>Client name</dt><dd>Cloudflare Manager</dd></div>
+          <div><dt>Response type</dt><dd>Code</dd></div>
+          <div><dt>Grant type</dt><dd>Authorization Code</dd></div>
+          <div><dt>Token authentication method</dt><dd>None (PKCE)</dd></div>
+          <div><dt>Redirect URLs</dt><dd><code>{window.location.origin}/auth/callback</code></dd></div>
+          <div><dt>Required scopes</dt><dd>Account Read, Zone Read, Workers R2 Storage Read, Workers R2 Storage Write, Account API Tokens Read, and Account API Tokens Write</dd></div>
+        </dl>
+        <p>Copy the client ID Cloudflare gives you into the field below. This PKCE client does not use a client secret.</p>
+        <p className="oauth-setup-note">New clients are private to their owning account. To allow users from other Cloudflare accounts to sign in, set Client URL to <code>{window.location.origin}</code>, add a logo, verify the domain, then make the client public.</p>
+      </div>
       <form className="oauth-settings-form" onSubmit={(event) => void saveClient(event)}>
         <label htmlFor="cloudflare-client-id">OAuth client ID</label><input id="cloudflare-client-id" value={clientID} onChange={(event) => setClientID(event.target.value)} autoComplete="off" />
         <div className="oauth-settings-actions"><button className="button button-secondary" disabled={savingClientID}>{savingClientID ? "Saving…" : "Save client ID"}</button><a className="button button-quiet" href="https://dash.cloudflare.com/?to=/:account/oauth-clients" target="_blank" rel="noopener noreferrer">Create or get a client ID ↗</a></div>

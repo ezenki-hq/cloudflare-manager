@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { RPCCaller, RunItem, Wire } from "@ezenki/deploy-commander-installer-interface";
+import type { RPCCaller, RunItem } from "@ezenki/deploy-commander-installer-interface";
 import { buildInstallRun, installationState, startInstall, type InstallInput } from "./installer";
 
 const input: InstallInput = { backendImage: "ghcr.io/ezenki/cloudflare-manager:latest", runnerImage: "ezenki/deploy-commander-runner@sha256:d3bdcc6470a469ca8344310e94292743e0020ef16bc097b6e9cc8b64d6c347c8" };
@@ -31,22 +31,24 @@ describe("initial installer", () => {
     expect(installationState(null,run("teardown",0,"2026-10-15T10:00:00Z"))).toBe("tearing-down");
   });
 
-  it("resolves the Commander connection before starting the run", async () => {
-    const caller={getLatestRun:vi.fn().mockResolvedValue(null),getManager:vi.fn().mockResolvedValue("manager-1"),start:vi.fn().mockResolvedValue({id:"run-1",queued_at:"now",status:0})} as unknown as RPCCaller;
-    const wire={startInterface:vi.fn().mockResolvedValue({id:"child",close:Promise.resolve({ok:true,manager:"commander",result:{connection:{id:"connection-id",manager:"manager-1",resource:"commander-resource"}}})})} as unknown as Wire;
-    const extension=caller as unknown as Record<string,unknown>;
-    Object.assign(extension,{getManagers:vi.fn().mockResolvedValue({items:[{id:"commander-manager"}]}),getResources:vi.fn().mockResolvedValue({items:[{id:"commander-resource"}]}),getResource:vi.fn().mockResolvedValue({resource:{id:"commander-resource",manager:"commander-manager",type:"commander"},config:{metadata:{manager_api:{host:"commander",port:6080,tls:false}}}}),getConnections:vi.fn().mockResolvedValue({items:[]}),setSecret:vi.fn(),getSecretKeys:vi.fn().mockResolvedValue([{key:"COMMANDER_PASSWORD"}])});
-    await startInstall(caller,wire,input);
+  it("rechecks the preapproved Commander connection before starting the run", async () => {
+    const caller={getLatestRun:vi.fn().mockResolvedValue(null),getManager:vi.fn().mockResolvedValue("manager-1"),start:vi.fn().mockResolvedValue({id:"run-1",queued_at:"now",status:0}),getResources:vi.fn().mockResolvedValue({items:[{id:"commander-resource",manager:"commander-manager",type:"commander"}]}),getConnections:vi.fn().mockResolvedValue({items:[{id:"connection-id",manager:"manager-1",resource:"commander-resource"}]}),getConnection:vi.fn().mockResolvedValue({connection:{id:"connection-id",manager:"manager-1",resource:"commander-resource"},config:{metadata:{manager_api:{host:"commander",port:6080,tls:false}}}}),getSecretKeys:vi.fn().mockResolvedValue([{key:"COMMANDER_PASSWORD"}] )} as unknown as RPCCaller;
+    await startInstall(caller,input,commander);
     expect(caller.start).toHaveBeenCalledWith(expect.objectContaining({action:"install",runner:input.runnerImage}));
   });
 
-  it("does not start a run after approval denial or when a run conflicts", async () => {
+  it("does not create a Commander connection or start a run during installation", async () => {
+    const caller={getLatestRun:vi.fn().mockResolvedValue(null),getManager:vi.fn().mockResolvedValue("manager-1"),start:vi.fn(),getResources:vi.fn().mockResolvedValue({items:[{id:"commander-resource",manager:"commander-manager",type:"commander"}]}),getConnections:vi.fn().mockResolvedValue({items:[]})} as unknown as RPCCaller;
+    await expect(startInstall(caller,input,commander)).rejects.toThrow(/create a Commander connection before installing/i);
+    expect(caller.start).not.toHaveBeenCalled();
+  });
+
+  it("does not start a run when the connection is missing or a run conflicts", async () => {
     const caller={getLatestRun:vi.fn().mockResolvedValue(null),getManager:vi.fn().mockResolvedValue("manager-1"),start:vi.fn()} as unknown as RPCCaller;
-    const denied={startInterface:vi.fn().mockResolvedValue({id:"child",close:Promise.resolve({ok:false,error:{message:"Denied"}})})} as unknown as Wire;
     const ext=caller as unknown as Record<string,unknown>;
-    Object.assign(ext,{getManagers:vi.fn().mockResolvedValue({items:[{id:"commander-manager"}]}),getResources:vi.fn().mockResolvedValue({items:[{id:"commander-resource"}]}),getResource:vi.fn().mockResolvedValue({resource:{id:"commander-resource",manager:"commander-manager",type:"commander"},config:{metadata:{manager_api:{host:"commander"}}}}),getConnections:vi.fn().mockResolvedValue({items:[]}),setSecret:vi.fn(),getSecretKeys:vi.fn()});
-    await expect(startInstall(caller,denied,input)).rejects.toThrow("Denied"); expect(caller.start).not.toHaveBeenCalled();
+    Object.assign(ext,{getResources:vi.fn().mockResolvedValue({items:[{id:"commander-resource",manager:"commander-manager",type:"commander"}]}),getConnections:vi.fn().mockResolvedValue({items:[]})});
+    await expect(startInstall(caller,input,commander)).rejects.toThrow(/create a Commander connection before installing/i); expect(caller.start).not.toHaveBeenCalled();
     vi.mocked(caller.getLatestRun).mockImplementation(async ({action}:any)=>action==="install"?run("install",1,"2026-10-15T10:00:00Z"):null);
-    await expect(startInstall(caller,denied,input)).rejects.toThrow(/already queued or running/i); expect(denied.startInterface).toHaveBeenCalledOnce();
+    await expect(startInstall(caller,input,commander)).rejects.toThrow(/already queued or running/i); expect(caller.start).not.toHaveBeenCalled();
   });
 });

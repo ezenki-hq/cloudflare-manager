@@ -13,9 +13,10 @@ const install: RunItem = { id: "install-1", action: "install", status: 1, queued
 
 afterEach(cleanup);
 
-function setup(options: { initialRun?: RunItem | null; event?: { seq: number; message: string } | null; startError?: Error; historyError?: Error } = {}) {
+function setup(options: { initialRun?: RunItem | null; event?: { seq: number; message: string } | null; startError?: Error; historyError?: Error; commanderConnection?: boolean } = {}) {
   let currentRun = options.initialRun === undefined ? install : options.initialRun;
   let currentEvent = options.event === undefined ? { seq: 5, message: "Install runner started" } : options.event;
+  let commanderConnectionExists = options.commanderConnection ?? true;
   const caller = {
     getLatestRun: vi.fn().mockImplementation(async ({ action }: { action: string }) => {
       if (action === "install" && options.historyError) throw options.historyError;
@@ -23,12 +24,10 @@ function setup(options: { initialRun?: RunItem | null; event?: { seq: number; me
     }),
     getRunEvents: vi.fn().mockImplementation(async () => ({ events: currentEvent ? [{ ...currentEvent, phase: "deploy", at: "" }] : [], limit: 1, offset: 0, total: currentEvent ? 1 : 0 })),
     getManager: vi.fn().mockResolvedValue("manager-1"),
-    getManagers: vi.fn().mockResolvedValue({ items: [{ id: "commander-manager" }] }),
-    getResources: vi.fn().mockResolvedValue({ items: [{ id: "commander-resource" }] }),
-    getResource: vi.fn().mockResolvedValue({ resource: { id: "commander-resource", manager: "commander-manager", type: "commander" }, config: { metadata: { manager_api: { host: "commander", port: 6080, tls: false } } } }),
-    getConnections: vi.fn().mockResolvedValue({ items: [] }),
+    getResources: vi.fn().mockResolvedValue({ items: [{ id: "commander-resource", manager: "commander-manager", type: "commander" }] }),
+    getConnections: vi.fn().mockImplementation(async () => ({ items: commanderConnectionExists ? [{ id: "connection-1", manager: "manager-1", resource: "commander-resource" }] : [] })),
+    getConnection: vi.fn().mockResolvedValue({ connection: { id: "connection-1", manager: "manager-1", resource: "commander-resource" }, config: { metadata: { manager_api: { host: "commander", port: 6080, tls: false } } } }),
     getSecretKeys: vi.fn().mockResolvedValue([{ key: "COMMANDER_PASSWORD", created_at: "", updated_at: "" }]),
-    setSecret: vi.fn().mockResolvedValue(undefined),
     databaseQuery: vi.fn().mockResolvedValue({ results: [{ statement: 0, status: "OK", result: [{ cloudflare_client_id: "oauth-client" }] }] }),
     start: vi.fn().mockImplementation(async () => {
       if (options.startError) throw options.startError;
@@ -38,7 +37,7 @@ function setup(options: { initialRun?: RunItem | null; event?: { seq: number; me
   const listeners = new Set<(event: InterfaceEvent) => void>();
   const bridge: CommanderBridge = {
     caller,
-    wire: { end: vi.fn(), startInterface: vi.fn().mockResolvedValue({ id: "child", close: Promise.resolve({ manager: "commander-manager", ok: true, result: { connection: { id: "connection-1", manager: "manager-1", resource: "commander-resource" } } }) }) } as any,
+    wire: { end: vi.fn(), startInterface: vi.fn().mockImplementation(async () => { commanderConnectionExists = true; return { id: "child", close: Promise.resolve({ manager: "commander-manager", ok: true, result: { connection: { id: "connection-1", manager: "manager-1", resource: "commander-resource" } } }) }; }) } as any,
     onEvent(handler) { listeners.add(handler); return () => listeners.delete(handler); },
   };
   return {
@@ -93,6 +92,7 @@ describe("installer interface", () => {
   it("keeps retry available after an install start failure", async () => {
     const harness = setup({ initialRun: null, event: null, startError: new Error("Commander unavailable") });
     render(<InstallApp bridge={harness.bridge} defaults={defaults} />);
+    await screen.findByText("Commander connection ready");
     const button = await screen.findByRole("button", { name: "Install" });
     fireEvent.click(button);
     expect((await screen.findByRole("alert")).textContent).toContain("Commander unavailable");
@@ -110,6 +110,7 @@ describe("installer interface", () => {
   it("keeps install disabled until Commander reports the new run", async () => {
     const harness = setup({ initialRun: null, event: null });
     render(<InstallApp bridge={harness.bridge} defaults={defaults} />);
+    await screen.findByText("Commander connection ready");
     fireEvent.click(await screen.findByRole("button", { name: "Install" }));
     await waitFor(() => expect(harness.caller.start).toHaveBeenCalledOnce());
     expect((screen.getByRole("button", { name: "Install run active" }) as HTMLButtonElement).disabled).toBe(true);
@@ -132,10 +133,39 @@ describe("installer interface", () => {
     expect(screen.getByRole("link", { name: /create or get a client id/i }).getAttribute("target")).toBe("_blank");
   });
 
+  it("shows the exact Cloudflare OAuth client settings and current-origin callback", async () => {
+    render(<InstallApp bridge={setup({ initialRun: null, event: null }).bridge} defaults={defaults} />);
+    const guide = await screen.findByLabelText("Cloudflare OAuth client configuration");
+    expect(guide.textContent).toContain(`${window.location.origin}/auth/callback`);
+    expect(guide.textContent).toContain("Client nameCloudflare Manager");
+    expect(guide.textContent).toContain("Response typeCode");
+    expect(guide.textContent).toContain("Grant typeAuthorization Code");
+    expect(guide.textContent).toContain("Token authentication methodNone (PKCE)");
+    expect(guide.textContent).toContain("Redirect URLs");
+    expect(guide.textContent).toContain("Account Read, Zone Read, Workers R2 Storage Read, Workers R2 Storage Write, Account API Tokens Read, and Account API Tokens Write");
+    expect(guide.textContent).toContain("Copy the client ID Cloudflare gives you into the field below");
+    expect(guide.textContent).toContain(`set Client URL to ${window.location.origin}`);
+  });
+
   it("loads and saves the optional OAuth client ID through manager settings", async () => {
     const harness=setup({initialRun:null,event:null});render(<InstallApp bridge={harness.bridge} defaults={defaults}/>);
     const field=await screen.findByLabelText("OAuth client ID") as HTMLInputElement;
     expect(field.value).toBe("oauth-client");fireEvent.change(field,{target:{value:"new-client"}});fireEvent.click(screen.getByRole("button",{name:"Save client ID"}));
     await waitFor(()=>expect(harness.caller.databaseQuery).toHaveBeenCalledWith("UPSERT manager_settings:current MERGE { cloudflare_client_id: $client_id }",{client_id:"new-client"}));
+  });
+
+  it("requires a Commander connection approval before enabling Install", async () => {
+    const harness = setup({ initialRun: null, event: null, commanderConnection: false });
+    render(<InstallApp bridge={harness.bridge} defaults={defaults} />);
+    const install = await screen.findByRole("button", { name: "Install" }) as HTMLButtonElement;
+    expect(install.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Create Commander connection" }));
+    await waitFor(() => expect(screen.getByText("Commander connection ready")).toBeTruthy());
+    expect(harness.bridge.wire.startInterface).toHaveBeenCalledOnce();
+    expect(harness.bridge.wire.startInterface).toHaveBeenCalledWith(expect.objectContaining({ manager: "commander-manager" }));
+    expect(install.disabled).toBe(false);
+    fireEvent.click(install);
+    await waitFor(() => expect(harness.caller.start).toHaveBeenCalledOnce());
+    expect(harness.bridge.wire.startInterface).toHaveBeenCalledOnce();
   });
 });

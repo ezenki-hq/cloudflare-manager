@@ -1,5 +1,5 @@
-import type { RPCCaller, RunItem, StartRunOptions, Wire } from "@ezenki/deploy-commander-installer-interface";
-import { resolveCommanderConnection, type CommanderConnection } from "./commanderConnection";
+import type { RPCCaller, RunItem, StartRunOptions } from "@ezenki/deploy-commander-installer-interface";
+import { inspectCommanderConnection, type CommanderConnection } from "./commanderConnection";
 
 export interface StartResponse { id: string; queued_at: string; status: number }
 export interface InstallInput { backendImage: string; runnerImage: string }
@@ -61,14 +61,18 @@ export function installationState(install: RunItem | null, teardown: RunItem | n
   return teardownTime > installTime ? "ready" : "installed";
 }
 
-export async function startInstall(caller: RPCCaller, wire: Wire, input: InstallInput): Promise<StartResponse> {
+export async function startInstall(caller: RPCCaller, input: InstallInput, approvedConnection: CommanderConnection): Promise<StartResponse> {
   const [install, teardown] = await Promise.all([caller.getLatestRun({ action: "install" }), caller.getLatestRun({ action: "teardown" })]);
   const state = installationState(install, teardown);
   if (state === "installing") throw new Error("An install run is already queued or running");
   if (state === "tearing-down") throw new Error("A teardown run is already queued or running");
   if (state === "installed") throw new Error("Cloudflare Manager is already installed; use teardown to remove it");
   const managerId = await caller.getManager();
-  const commander = await resolveCommanderConnection(caller, wire, managerId);
+  const commander = await inspectCommanderConnection(caller, managerId);
+  if (!commander) throw new Error("Create a Commander connection before installing");
+  if (commander.connectionId !== approvedConnection.connectionId || commander.resourceId !== approvedConnection.resourceId) {
+    throw new Error("The approved Commander connection changed; create or check the connection before installing");
+  }
   return caller.start(buildInstallRun({ ...input, managerId, commander }));
 }
 

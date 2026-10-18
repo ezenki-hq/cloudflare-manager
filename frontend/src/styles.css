@@ -101,6 +101,14 @@ button:disabled { cursor: not-allowed; opacity: .54; }
 .connection-list small { display: block; margin-top: 4px; color: #85918d; font-size: 9px; }
 .page-error { margin-bottom: 14px; padding: 11px 14px; display: flex; justify-content: space-between; gap: 12px; border: 1px solid #f0d6d1; border-radius: 8px; background: #fff7f5; color: #983e34; font-size: 12px; }
 .oauth-settings { margin: 0 0 16px; }
+.oauth-setup { margin: -4px 0 18px; padding: 14px 16px; border: 1px solid #e4ece8; border-radius: 9px; background: #f8fbf9; color: #52635c; font-size: 12px; line-height: 1.5; }
+.oauth-setup > p { margin: 0; }
+.oauth-setup dl { display: grid; gap: 7px; margin: 10px 0; }
+.oauth-setup dl > div { display: grid; grid-template-columns: 175px minmax(0, 1fr); gap: 10px; }
+.oauth-setup dt { color: #40564d; font-weight: 700; }
+.oauth-setup dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.oauth-setup code { color: #23443a; font-size: 11px; }
+.oauth-setup .oauth-setup-note { margin-top: 10px; padding-top: 9px; border-top: 1px solid #e4ece8; color: #718078; font-size: 11px; }
 .oauth-settings-form { display: grid; gap: 8px; }
 .oauth-settings-form label { color: #667770; font-size: 11px; font-weight: 700; }
 .oauth-settings-form input { height: 38px; padding: 0 10px; border: 1px solid #dce5e1; border-radius: 7px; font: inherit; font-size: 12px; }
@@ -124,6 +132,7 @@ button:disabled { cursor: not-allowed; opacity: .54; }
   .hero { padding: 32px 0 22px; }
   .hero-stat { display: none; }
   .panel, .bucket-panel, .detail-column .panel { padding: 18px; }
+  .oauth-setup dl > div { grid-template-columns: 1fr; gap: 1px; }
   .filter-row { grid-template-columns: 1fr; }
   .domain-form, .connection-form { grid-template-columns: 1fr; }
   .domain-form .button, .connection-form .button { justify-self: start; }

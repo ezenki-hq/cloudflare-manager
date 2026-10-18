@@ -16,8 +16,20 @@ button, input { font: inherit; }
 .panel-heading p { margin: 6px 0 0; color: #6d7b77; font-size: 12px; }
 .status-pill { white-space: nowrap; border-radius: 999px; padding: 6px 10px; background: #eef2f0; color: #687873; font-size: 10px; font-weight: 750; }
 .status-installed { background: #e5f6ec; color: #177547; }
+.status-unavailable { background: #fff0ed; color: #a54035; }
+.commander-connection-panel { margin-bottom: 16px; }
+.connection-ready { margin: 0; color: #177547; font-size: 12px; font-weight: 700; }
+.connection-help { margin: 0 0 12px; color: #6d7b77; font-size: 12px; line-height: 1.5; }
 .install-form { display: flex; margin-top: 20px; }
 .oauth-panel { margin-top: 16px; }
+.oauth-setup { margin: -4px 0 18px; padding: 14px 16px; border: 1px solid #e4ece8; border-radius: 9px; background: #f8fbf9; color: #52635c; font-size: 12px; line-height: 1.5; }
+.oauth-setup > p { margin: 0; }
+.oauth-setup dl { display: grid; gap: 7px; margin: 10px 0; }
+.oauth-setup dl > div { display: grid; grid-template-columns: 175px minmax(0, 1fr); gap: 10px; }
+.oauth-setup dt { color: #40564d; font-weight: 700; }
+.oauth-setup dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.oauth-setup code { color: #23443a; font-size: 11px; }
+.oauth-setup .oauth-setup-note { margin-top: 10px; padding-top: 9px; border-top: 1px solid #e4ece8; color: #718078; font-size: 11px; }
 .settings-form { display: grid; gap: 8px; }
 .settings-form label { color: #485a56; font-size: 11px; font-weight: 700; }
 .settings-form input { width: 100%; height: 40px; padding: 0 11px; border: 1px solid #dce5e1; border-radius: 7px; color: #243632; outline: none; background: #fff; font-size: 13px; }
@@ -31,4 +43,4 @@ button, input { font: inherit; }
 .run-summary p { margin: 2px 0 0; color: #75827d; }
 .inline-error { margin: 0 0 12px; color: #a54035; font-size: 12px; }
 footer { max-width: 790px; margin-top: 24px; color: #84918d; font-size: 10px; }
-@media (max-width: 620px) { .install-shell { padding: 0 16px 24px; } .brand { height: 68px; } .hero { padding: 32px 0 22px; } .panel { padding: 18px; } }
+@media (max-width: 620px) { .install-shell { padding: 0 16px 24px; } .brand { height: 68px; } .hero { padding: 32px 0 22px; } .panel { padding: 18px; } .oauth-setup dl > div { grid-template-columns: 1fr; gap: 1px; } }
