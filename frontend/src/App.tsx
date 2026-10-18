@@ -419,9 +419,10 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
           <div><dt>Grant type</dt><dd>Authorization Code</dd></div>
           <div><dt>Token authentication method</dt><dd>None (PKCE)</dd></div>
           <div><dt>Redirect URLs</dt><dd><code>{window.location.origin}/auth/callback</code></dd></div>
-          <div><dt>Required scopes</dt><dd>Account Read, Zone Read, Workers R2 Storage Read, Workers R2 Storage Write, Account API Tokens Read, and Account API Tokens Write</dd></div>
+          <div><dt>Required scopes</dt><dd>Account Read, Zone Read, Workers R2 Storage Read, Workers R2 Storage Write, Account API Tokens Read, and Account API Tokens Write<br /><code>account.read zone.read workers-r2.read workers-r2.write account-api-tokens.read account-api-tokens.write</code></dd></div>
         </dl>
         <p>Copy the client ID Cloudflare gives you into the field below. This PKCE client does not use a client secret.</p>
+        <p className="oauth-setup-note">On Cloudflare’s consent screen, select the account to review these requested permissions before authorizing.</p>
         <p className="oauth-setup-note">New clients are private to their owning account. To allow users from other Cloudflare accounts to sign in, set Client URL to <code>{window.location.origin}</code>, add a logo, verify the domain, then make the client public.</p>
       </div>
       <form className="oauth-settings-form" onSubmit={(event) => void saveClient(event)}>
@@ -436,7 +437,8 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
       <p>{auth === "unavailable" ? "The manager API did not respond. Check the configured same-site route and service health." : "Sign in to Cloudflare to see your accounts. Access is personal to your Cloudflare user and is not shared with application credentials."}</p>
       {authError && <p className="inline-error" role="alert">{authError}</p>}
       {auth === "blocked" && <div className="cookie-help"><strong>Authorization finished, but this frame cannot read its session.</strong><p>Route the manager and Deploy Commander through the same HTTPS site. The Go API must allow the exact Commander origin, and the browser must accept the manager's host-only cookie in this embedded flow. Try opening the manager in a top-level tab if your browser blocks third-party cookies.</p></div>}
-      {auth !== "unavailable" && <button className="button button-primary" onClick={signIn} disabled={!clientID.trim()}>Sign in with Cloudflare</button>}
+      <button className="button button-primary" onClick={signIn} disabled={!clientID.trim()}>Sign in with Cloudflare</button>
+      {!clientID.trim() && <p className="auth-hint">Save the OAuth client ID above before signing in.</p>}
       {auth === "unavailable" && <button className="button button-secondary" onClick={() => { setAuth("checking"); void api.session().then((result) => setAuth(result.authenticated ? "signed-in" : "signed-out")).catch((error) => { setAuth(statusOf(error) === 401 ? "signed-out" : "unavailable"); setAuthError(message(error)); }); }}>Retry connection</button>}
     </section> : <>
       {pageError && <div className="page-error" role="alert"><span>{pageError}</span><button onClick={() => setPageError("")} aria-label="Dismiss error">×</button></div>}

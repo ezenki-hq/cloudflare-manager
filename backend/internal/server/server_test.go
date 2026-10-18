@@ -63,6 +63,62 @@ func TestSignedRouteRequiresCorrectJWTAndReturnsNoStore(t *testing.T) {
 	}
 }
 
+func TestSignedRouteAcceptsHTTPOrigin(t *testing.T) {
+	c := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c++
+		_, _ = w.Write([]byte(`{"success":true,"result":[],"result_info":{"page":1,"total_pages":1}}`))
+	}))
+	defer upstream.Close()
+	oauthHandler, err := auth.NewHandler(auth.Config{AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token", StateKey: testKey}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(Config{ManagerID: testManager, JWTSecret: testKey}, oauthHandler, cloudflare.NewClient(upstream.URL, upstream.Client()), nil)
+	origin := "http://localhost:4173"
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, signedRequest(t, "/api/accounts/list", origin, map[string]any{}))
+	if resp.Code != http.StatusOK || c != 1 || resp.Header().Get("Access-Control-Allow-Origin") != origin {
+		t.Fatalf("status=%d called=%d headers=%v body=%s", resp.Code, c, resp.Header(), resp.Body.String())
+	}
+}
+
+func TestSignedSessionWithoutAccessCookieReturnsUnauthorized(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+	oauthHandler, err := auth.NewHandler(auth.Config{AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token", StateKey: testKey}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(Config{ManagerID: testManager, JWTSecret: testKey}, oauthHandler, cloudflare.NewClient(ts.URL, ts.Client()), nil)
+	req := signedRequest(t, "/api/session", testOrigin, map[string]any{})
+	req.Header.Del("Cookie")
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusUnauthorized || !strings.Contains(resp.Body.String(), `"code":"unauthorized"`) {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestSignedOAuthStartAcceptsPublicOriginBehindInternalHost(t *testing.T) {
+	oauthHandler, err := auth.NewHandler(auth.Config{AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token", StateKey: testKey}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(Config{ManagerID: testManager, JWTSecret: testKey}, oauthHandler, nil, nil)
+	req := signedRequest(t, "/auth/start", testOrigin, map[string]any{
+		"client_id": "oauth-client",
+		"opener_origin": testOrigin,
+		"api_origin": testOrigin,
+	})
+	req.Host = "cloudflare-manager-1:8080"
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK || !strings.Contains(resp.Body.String(), "redirect_uri=https%3A%2F%2Ffrontend.example.test%2Fauth%2Fcallback") {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestSignedRouteRejectsLegacyAndMismatchedJWT(t *testing.T) {
 	called := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called++ }))

@@ -4,7 +4,7 @@ import { inspectCommanderConnection, resolveCommanderConnection, type CommanderC
 import { installationState, startInstall, type InstallInput, type InstallationState } from "./installer";
 import type { CommanderBridge } from "./commander";
 import { reloadCurrentInterface } from "./hostNavigation";
-import { loadLatestInstall, loadLatestTeardown } from "./runHistory";
+import { loadLatestInstall, loadLatestInstallEvent, loadLatestTeardown, type LatestInstallEvent } from "./runHistory";
 import { loadClientID, saveClientID } from "./settings";
 
 interface InstallAppProps {
@@ -26,6 +26,7 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
   const [connectionError, setConnectionError] = useState("");
   const [state, setState] = useState<InstallerUIState>("ready");
   const [installRun, setInstallRun] = useState<RunItem | null>(null);
+  const [latestInstallEvent, setLatestInstallEvent] = useState<{ runId: string; event: LatestInstallEvent } | null>(null);
   const [teardownRun, setTeardownRun] = useState<RunItem | null>(null);
   const [reloadBlocked, setReloadBlocked] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -43,7 +44,17 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
       loadLatestInstall(caller),
       loadLatestTeardown(caller),
     ]);
+    const eventRun = locallyActiveRun.current && isActive(locallyActiveRun.current.status) && install?.id !== locallyActiveRun.current.id
+      ? locallyActiveRun.current
+      : install;
+    let event: LatestInstallEvent | null = null;
+    if (eventRun?.id) {
+      try { event = await loadLatestInstallEvent(caller, eventRun.id); } catch { /* Event history must not block installer status. */ }
+    }
     if (version !== refreshVersion.current) return;
+    if (eventRun?.id && event && event.message.trim()) {
+      setLatestInstallEvent((current) => current?.runId === eventRun.id && current.event.seq > event.seq ? current : { runId: eventRun.id, event });
+    }
     teardownRunId.current = teardown?.id ?? null;
     setTeardownRun(teardown);
     if (locallyActiveRun.current && isActive(locallyActiveRun.current.status) && install?.id !== locallyActiveRun.current.id) {
@@ -97,6 +108,13 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
       const isInstallUpdate = runId === currentRunId.current;
       const isTeardownUpdate = runId === teardownRunId.current;
       if (!isInstallUpdate && !isTeardownUpdate) return;
+      if (isInstallUpdate && event.data.type === "event" && event.data.payload.message?.trim()) {
+        const seq = event.data.payload.seq;
+        if (typeof seq === "number") {
+          const latestEvent = { runId, event: { seq, at: "", phase: "", message: event.data.payload.message } };
+          setLatestInstallEvent((current) => !current || current.runId !== runId || current.event.seq <= seq ? latestEvent : current);
+        }
+      }
       void refresh().catch((cause) => setError(message(cause)));
     });
     return () => { alive = false; refreshVersion.current += 1; unsubscribe(); bridge.wire.end(); };
@@ -177,6 +195,7 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
       <form className="install-form" onSubmit={(event) => void submit(event)}>
         <button className="button" disabled={loading || busy || state !== "ready" || connectionState !== "ready" || !commanderConnection} type="submit">{busy ? "Starting install…" : state === "ready" ? "Install" : stateLabel(state)}</button>
       </form>
+      {latestInstallEvent && latestInstallEvent.runId === installRun?.id && <p className="latest-install-event" aria-live="polite">{latestInstallEvent.event.message}</p>}
     </section>
     <section className="panel oauth-panel" aria-labelledby="oauth-title">
       <div className="panel-heading"><div><h2 id="oauth-title">Cloudflare OAuth</h2><p>Optional setup. Add a client ID now or later in the manager settings.</p></div></div>
@@ -188,9 +207,10 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
           <div><dt>Grant type</dt><dd>Authorization Code</dd></div>
           <div><dt>Token authentication method</dt><dd>None (PKCE)</dd></div>
           <div><dt>Redirect URLs</dt><dd><code>{window.location.origin}/auth/callback</code></dd></div>
-          <div><dt>Required scopes</dt><dd>Account Read, Zone Read, Workers R2 Storage Read, Workers R2 Storage Write, Account API Tokens Read, and Account API Tokens Write</dd></div>
+          <div><dt>Required scopes</dt><dd>Account Read, Zone Read, Workers R2 Storage Read, Workers R2 Storage Write, Account API Tokens Read, and Account API Tokens Write<br /><code>account.read zone.read workers-r2.read workers-r2.write account-api-tokens.read account-api-tokens.write</code></dd></div>
         </dl>
         <p>Copy the client ID Cloudflare gives you into the field below. This PKCE client does not use a client secret.</p>
+        <p className="oauth-setup-note">On Cloudflare’s consent screen, select the account to review these requested permissions before authorizing.</p>
         <p className="oauth-setup-note">New clients are private to their owning account. To allow users from other Cloudflare accounts to sign in, set Client URL to <code>{window.location.origin}</code>, add a logo, verify the domain, then make the client public.</p>
       </div>
       <form className="settings-form" onSubmit={(event) => void saveClient(event)}>

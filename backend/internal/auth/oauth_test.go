@@ -23,6 +23,30 @@ func oauthTestHandler(t *testing.T, tokenServer *httptest.Server, now func() tim
 	return h
 }
 
+func TestTokenReturnsUnauthenticatedWhenCookieIsMissingOrEmpty(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+	h := oauthTestHandler(t, ts, time.Now)
+
+	for _, tc := range []struct {
+		name   string
+		cookie *http.Cookie
+	}{
+		{name: "missing"},
+		{name: "empty", cookie: &http.Cookie{Name: accessCookieName, Value: ""}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/api/session", nil)
+			if tc.cookie != nil {
+				r.AddCookie(tc.cookie)
+			}
+			if token, ok := h.Token(r); ok || token != "" {
+				t.Fatalf("Token() = (%q, %t), want empty unauthenticated result", token, ok)
+			}
+		})
+	}
+}
+
 func TestOAuthStartAndCallbackUseSignedStateAndSavedClientID(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	var gotForm url.Values
@@ -34,13 +58,14 @@ func TestOAuthStartAndCallbackUseSignedStateAndSavedClientID(t *testing.T) {
 	defer tokenServer.Close()
 	h := oauthTestHandler(t, tokenServer, func() time.Time { return now })
 	startReq := httptest.NewRequest(http.MethodPost, "https://manager.example.test/auth/start", nil)
+	startReq.Header.Set("Origin", "https://frontend.example.test")
 	recorder := httptest.NewRecorder()
 	authURL, err := h.Start(recorder, startReq, StartInput{ClientID: "client-before-edit", OpenerOrigin: "https://frontend.example.test", APIOrigin: "https://manager.example.test"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	parsed, _ := url.Parse(authURL)
-	if parsed.Query().Get("client_id") != "client-before-edit" || parsed.Query().Get("redirect_uri") != "https://manager.example.test/auth/callback" || parsed.Query().Get("code_challenge_method") != "S256" {
+	if parsed.Query().Get("client_id") != "client-before-edit" || parsed.Query().Get("redirect_uri") != "https://manager.example.test/auth/callback" || parsed.Query().Get("code_challenge_method") != "S256" || parsed.Query().Get("scope") != "account.read zone.read workers-r2.read workers-r2.write account-api-tokens.read account-api-tokens.write" {
 		t.Fatalf("unexpected URL %s", authURL)
 	}
 	cookies := recorder.Result().Cookies()
@@ -78,12 +103,52 @@ func TestOAuthStartChecksAPIHostAndOrigin(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	defer ts.Close()
 	h := oauthTestHandler(t, ts, time.Now)
-	for _, in := range []StartInput{{ClientID: "", OpenerOrigin: "https://front.test", APIOrigin: "https://manager.test"}, {ClientID: "id", OpenerOrigin: "null", APIOrigin: "https://manager.test"}, {ClientID: "id", OpenerOrigin: "https://front.test", APIOrigin: "https://attacker.test"}, {ClientID: "id", OpenerOrigin: "https://front.test", APIOrigin: "http://manager.test"}} {
+	for _, in := range []StartInput{{ClientID: "", OpenerOrigin: "https://front.test", APIOrigin: "https://manager.test"}, {ClientID: "id", OpenerOrigin: "null", APIOrigin: "https://manager.test"}, {ClientID: "id", OpenerOrigin: "https://front.test", APIOrigin: "https://attacker.test"}} {
 		r := httptest.NewRequest(http.MethodPost, "https://manager.test/auth/start", nil)
+		r.Header.Set("Origin", in.OpenerOrigin)
 		w := httptest.NewRecorder()
 		if _, e := h.Start(w, r, in); e == nil || len(w.Result().Cookies()) != 0 {
 			t.Errorf("accepted %#v: err=%v cookies=%v", in, e, w.Result().Cookies())
 		}
+	}
+}
+
+func TestOAuthStartAcceptsHTTPOriginsAndBuildsHTTPRedirect(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+	h := oauthTestHandler(t, ts, time.Now)
+	r := httptest.NewRequest(http.MethodPost, "http://manager.test/auth/start", nil)
+	r.Host = "cloudflare-manager-1:8080"
+	r.Header.Set("Origin", "http://manager.test")
+	w := httptest.NewRecorder()
+	if _, err := h.Start(w, r, StartInput{ClientID: "id", OpenerOrigin: "http://front.test", APIOrigin: "http://manager.test"}); err != nil {
+		t.Fatalf("HTTP OAuth start rejected: %v", err)
+	}
+	var stateCookie *http.Cookie
+	for _, cookie := range w.Result().Cookies() {
+		if cookie.Name == stateCookieName {
+			stateCookie = cookie
+		}
+	}
+	if stateCookie == nil || !stateCookie.Secure {
+		t.Fatal("HTTP flow must retain the Secure state cookie")
+	}
+	state, err := h.decodeTransient(stateCookie.Value)
+	if err != nil || state.RedirectURI != "http://manager.test/auth/callback" {
+		t.Fatalf("state=%+v err=%v", state, err)
+	}
+}
+
+func TestOAuthStartRejectsAPIOriginDifferentFromBrowserOrigin(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+	h := oauthTestHandler(t, ts, time.Now)
+	r := httptest.NewRequest(http.MethodPost, "https://internal-service:8080/auth/start", nil)
+	r.Header.Set("Origin", "https://frontend.example.test")
+	w := httptest.NewRecorder()
+	_, err := h.Start(w, r, StartInput{ClientID: "id", OpenerOrigin: "https://frontend.example.test", APIOrigin: "https://attacker.example.test"})
+	if err == nil || len(w.Result().Cookies()) != 0 {
+		t.Fatalf("mismatched browser/API origins accepted: err=%v cookies=%v", err, w.Result().Cookies())
 	}
 }
 

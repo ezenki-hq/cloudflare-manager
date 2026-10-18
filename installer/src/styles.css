@@ -21,6 +21,7 @@ button, input { font: inherit; }
 .connection-ready { margin: 0; color: #177547; font-size: 12px; font-weight: 700; }
 .connection-help { margin: 0 0 12px; color: #6d7b77; font-size: 12px; line-height: 1.5; }
 .install-form { display: flex; margin-top: 20px; }
+.latest-install-event { margin: 14px 0 0; padding: 11px 13px; border: 1px solid #e4ece8; border-radius: 8px; background: #f8fbf9; color: #40564d; font-size: 12px; line-height: 1.5; }
 .oauth-panel { margin-top: 16px; }
 .oauth-setup { margin: -4px 0 18px; padding: 14px 16px; border: 1px solid #e4ece8; border-radius: 9px; background: #f8fbf9; color: #52635c; font-size: 12px; line-height: 1.5; }
 .oauth-setup > p { margin: 0; }

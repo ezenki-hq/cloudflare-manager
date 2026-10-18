@@ -99,37 +99,38 @@ describe("installer interface", () => {
     expect(reload).toHaveBeenCalledTimes(2);
   });
 
-  it("uses teardown status to guard Install without showing run details", async () => {
+  it("uses teardown status to guard Install and still shows the latest install event", async () => {
     const teardown = { ...install, id: "teardown-1", action: "teardown", status: 1, queued_at: "2026-10-16T11:00:00Z" } as RunItem;
     const harness = setup({ initialRun: { ...install, status: 2 }, initialTeardown: teardown });
     const reloadPage = vi.fn().mockReturnValue(true);
     render(<InstallApp bridge={harness.bridge} defaults={defaults} reloadPage={reloadPage} />);
     await screen.findByRole("button", { name: "Teardown in progress" });
     expect(screen.queryByText("teardown-1")).toBeNull();
-    expect(screen.queryByText("Install runner started")).toBeNull();
+    expect(await screen.findByText("Install runner started")).toBeTruthy();
     expect(screen.queryByLabelText("install run status")).toBeNull();
     expect(screen.queryByLabelText("teardown run status")).toBeNull();
     expect((screen.getByRole("button", { name: "Teardown in progress" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(harness.caller.getRunEvents).not.toHaveBeenCalled();
+    expect(harness.caller.getRunEvents).toHaveBeenCalledWith({ run_id: "install-1", limit: 1, order: "desc" });
     harness.setTeardown({ ...teardown, status: 2 });
     fireEvent(window, new Event("focus"));
     await waitFor(() => expect(screen.getByRole("button", { name: "Install" })).toBeTruthy());
     expect((screen.getByRole("button", { name: "Install" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  it("restores install status without showing its ID or saved event", async () => {
+  it("restores install status and shows its saved latest event without exposing the run ID", async () => {
     const harness = setup();
     render(<InstallApp bridge={harness.bridge} defaults={defaults} />);
     expect(await screen.findByRole("button", { name: "Installing" })).toBeTruthy();
     expect(screen.queryByText("install-1")).toBeNull();
-    expect(screen.queryByText("Install runner started")).toBeNull();
+    expect(await screen.findByText("Install runner started")).toBeTruthy();
     expect(screen.queryByLabelText("install run status")).toBeNull();
-    expect(harness.caller.getRunEvents).not.toHaveBeenCalled();
+    expect(harness.caller.getRunEvents).toHaveBeenCalledWith({ run_id: "install-1", limit: 1, order: "desc" });
   });
 
-  it("uses live run events to refresh lifecycle state without displaying event messages", async () => {
+  it("shows the latest live event for the active install and ignores unrelated events", async () => {
     const harness = setup();
     render(<InstallApp bridge={harness.bridge} defaults={defaults} />);
+    await screen.findByRole("button", { name: "Installing" });
     harness.emit({ type: "event", eventType: "run-update", data: { type: "event", payload: { run_id: "install-1", seq: 6, message: "Service is healthy" } } });
     await waitFor(() => expect(harness.caller.getLatestRun).toHaveBeenCalledWith({ action: "install" }));
     harness.emit({ type: "event", eventType: "run-update", data: { type: "event", payload: { run_id: "install-1", seq: 4, message: "Old event" } } });
@@ -139,7 +140,7 @@ describe("installer interface", () => {
     expect(screen.queryByText("Old event")).toBeNull();
     expect(screen.queryByText("Other run")).toBeNull();
     expect(screen.queryByText("A log line")).toBeNull();
-    expect(screen.queryByText("Service is healthy")).toBeNull();
+    await waitFor(() => expect(screen.getByText("Service is healthy")).toBeTruthy());
   });
 
   it("refreshes the run when an install starts", async () => {
@@ -207,6 +208,7 @@ describe("installer interface", () => {
     expect(guide.textContent).toContain("Token authentication methodNone (PKCE)");
     expect(guide.textContent).toContain("Redirect URLs");
     expect(guide.textContent).toContain("Account Read, Zone Read, Workers R2 Storage Read, Workers R2 Storage Write, Account API Tokens Read, and Account API Tokens Write");
+    expect(guide.textContent).toContain("account.read zone.read workers-r2.read workers-r2.write account-api-tokens.read account-api-tokens.write");
     expect(guide.textContent).toContain("Copy the client ID Cloudflare gives you into the field below");
     expect(guide.textContent).toContain(`set Client URL to ${window.location.origin}`);
   });

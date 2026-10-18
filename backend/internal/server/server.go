@@ -223,7 +223,7 @@ func validDomain(v string) bool {
 }
 func validOrigin(v string) bool {
 	u, err := url.Parse(v)
-	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == ""
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != "" && u.User == nil && u.Path == "" && u.RawQuery == "" && u.Fragment == ""
 }
 func staticHandler(directory string) http.Handler {
 	root, e := filepath.Abs(directory)

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +21,7 @@ const (
 	accessCookieName = "__Host-cf-access"
 	stateLifetime    = 10 * time.Minute
 	maxTokenResponse = 1 << 20
+	requiredScopes   = "account.read zone.read workers-r2.read workers-r2.write account-api-tokens.read account-api-tokens.write"
 )
 
 type Config struct {
@@ -72,7 +74,10 @@ func NewHandler(cfg Config, client *http.Client, now func() time.Time) (*Handler
 func (h *Handler) Register(mux *http.ServeMux) { mux.HandleFunc("GET /auth/callback", h.callback) }
 func (h *Handler) Token(r *http.Request) (string, bool) {
 	c, e := r.Cookie(accessCookieName)
-	return c.Value, e == nil && c.Value != ""
+	if e != nil || c == nil || c.Value == "" {
+		return "", false
+	}
+	return c.Value, true
 }
 func (h *Handler) ClearToken(w http.ResponseWriter) {
 	http.SetCookie(w, &http.Cookie{Name: accessCookieName, Value: "", Path: "/", Expires: time.Unix(1, 0), MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
@@ -89,9 +94,14 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request, input StartInput
 	if err := validateOrigin(input.APIOrigin); err != nil {
 		return "", errors.New("invalid API origin")
 	}
+	browserOrigin := r.Header.Get("Origin")
+	if err := validateOrigin(browserOrigin); err != nil {
+		return "", errors.New("invalid browser origin")
+	}
 	api, _ := url.Parse(input.APIOrigin)
-	if !strings.EqualFold(api.Host, r.Host) {
-		return "", errors.New("API origin host does not match request host")
+	if input.APIOrigin != browserOrigin && !strings.EqualFold(api.Host, r.Host) {
+		slog.Warn("OAuth start rejected because API origin matches neither browser origin nor request host", "api_origin", input.APIOrigin, "browser_origin", browserOrigin, "request_host", r.Host, "forwarded_host", r.Header.Get("X-Forwarded-Host"))
+		return "", errors.New("API origin does not match browser origin or request host")
 	}
 	state, err := randomURLToken(32)
 	if err != nil {
@@ -115,6 +125,7 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request, input StartInput
 	q.Set("response_type", "code")
 	q.Set("client_id", input.ClientID)
 	q.Set("redirect_uri", redirect)
+	q.Set("scope", requiredScopes)
 	q.Set("state", state)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
@@ -228,15 +239,15 @@ func randomURLToken(n int) (string, error) {
 }
 func validateOrigin(raw string) error {
 	u, e := url.Parse(raw)
-	if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("must be HTTPS origin")
+	if e != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("must be HTTP(S) origin")
 	}
 	return nil
 }
 func validOrigin(raw string) bool { return validateOrigin(raw) == nil }
 func validRedirect(raw string) bool {
 	u, e := url.Parse(raw)
-	return e == nil && u.Scheme == "https" && u.Host != "" && u.Path == "/auth/callback" && u.RawQuery == "" && u.Fragment == "" && u.User == nil
+	return e == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" && u.Path == "/auth/callback" && u.RawQuery == "" && u.Fragment == "" && u.User == nil
 }
 func validateEndpoint(raw string) error {
 	u, e := url.Parse(raw)

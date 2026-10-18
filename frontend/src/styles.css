@@ -54,6 +54,7 @@ button:disabled { cursor: not-allowed; opacity: .54; }
 .auth-panel { max-width: 720px; }
 .auth-panel h2 { margin-top: 12px; }
 .auth-panel > p { max-width: 600px; margin: 9px 0 18px; }
+.auth-hint { margin: 8px 0 0; color: #718078; font-size: 12px; }
 .cookie-help { margin: 18px 0; padding: 14px 16px; border: 1px solid #f0d8b6; border-radius: 9px; background: #fffaf2; color: #654b2d; font-size: 12px; line-height: 1.55; }
 .cookie-help p { margin: 6px 0 0; }
 .filter-row label, .domain-form label, .connection-form label { display: flex; min-width: 0; flex-direction: column; gap: 6px; color: #485a56; font-size: 11px; font-weight: 700; }

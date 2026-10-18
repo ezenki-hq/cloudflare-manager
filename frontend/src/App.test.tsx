@@ -237,6 +237,7 @@ describe("Cloudflare Manager interface", () => {
     expect(guide.textContent).toContain("Token authentication methodNone (PKCE)");
     expect(guide.textContent).toContain("Redirect URLs");
     expect(guide.textContent).toContain("Account Read, Zone Read, Workers R2 Storage Read, Workers R2 Storage Write, Account API Tokens Read, and Account API Tokens Write");
+    expect(guide.textContent).toContain("account.read zone.read workers-r2.read workers-r2.write account-api-tokens.read account-api-tokens.write");
     expect(guide.textContent).toContain("Copy the client ID Cloudflare gives you into the field below");
     expect(guide.textContent).toContain(`set Client URL to ${window.location.origin}`);
   });
@@ -253,6 +254,28 @@ describe("Cloudflare Manager interface", () => {
     expect(caller.start).not.toHaveBeenCalled();
   });
 
+  it("keeps OAuth sign-in available when the initial session check reports the manager unavailable", async () => {
+    const popup = { close: vi.fn(), location: { href: "" } } as unknown as Window;
+    vi.spyOn(window, "open").mockReturnValue(popup);
+    const { api, bridge } = setup({ session: vi.fn().mockRejectedValue(Object.assign(new Error("Manager API returned 502"), { status: 502 })) });
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
+
+    expect(await screen.findByRole("heading", { name: "Manager service is unavailable" })).toBeTruthy();
+    const button = screen.getByRole("button", { name: /sign in with cloudflare/i });
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(button);
+    expect(api.startOAuth).toHaveBeenCalledWith("oauth-client", window.location.origin, "https://cf-manager.example.test");
+    expect(screen.getByRole("button", { name: "Retry connection" })).toBeTruthy();
+  });
+
+  it("explains that a client ID is needed before sign-in can start", async () => {
+    const { api, bridge } = setup({ clientID: vi.fn().mockResolvedValue(""), session: vi.fn().mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 })) });
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
+
+    expect(await screen.findByText(/save the oauth client id above before signing in/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /sign in with cloudflare/i }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("shows same-site cookie guidance when popup authorization completes but session stays unauthorized", async () => {
     const popup = { close: vi.fn(), location: { href: "" } } as unknown as Window;
     vi.spyOn(window, "open").mockReturnValue(popup);
@@ -262,6 +285,23 @@ describe("Cloudflare Manager interface", () => {
     fireEvent(window, new MessageEvent("message", { origin: "https://cf-manager.example.test", source: popup, data: { type: "cloudflare-oauth-complete" } }));
     expect(await screen.findByText(/same https site/i)).toBeTruthy();
     expect(await screen.findByText(/third.party cookies/i)).toBeTruthy();
+  });
+
+  it("refreshes the manager session after Cloudflare OAuth completes", async () => {
+    const popup = { close: vi.fn(), location: { href: "" } } as unknown as Window;
+    vi.spyOn(window, "open").mockReturnValue(popup);
+    const session = vi.fn()
+      .mockResolvedValueOnce({ authenticated: false })
+      .mockResolvedValueOnce({ authenticated: true });
+    const { api, bridge } = setup({ session });
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with cloudflare/i }));
+    await waitFor(() => expect(api.startOAuth).toHaveBeenCalledOnce());
+    fireEvent(window, new MessageEvent("message", { origin: "https://cf-manager.example.test", source: popup, data: { type: "cloudflare-oauth-complete" } }));
+
+    expect(await screen.findByText("Cloudflare connected")).toBeTruthy();
+    expect(session).toHaveBeenCalledTimes(2);
   });
 
   it("loads paginated buckets, shows domain status, and confirms bucket deletion", async () => {
