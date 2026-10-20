@@ -7,6 +7,7 @@ import { InstallApp } from "./InstallApp";
 
 const defaults = {
   backendImage: "ghcr.io/ezenki/cloudflare-manager:1.2.3",
+  stateTTLImage: "ezenki/cloudflare-manager-state-ttl:latest",
   runnerImage: "ezenki/deploy-commander-runner@sha256:d3bdcc6470a469ca8344310e94292743e0020ef16bc097b6e9cc8b64d6c347c8",
 };
 const install: RunItem = { id: "install-1", action: "install", status: 1, queued_at: "2026-10-16T10:00:00Z", created_at: "2026-10-16T10:00:00Z", updated_at: "2026-10-16T10:00:00Z" };
@@ -178,6 +179,7 @@ describe("installer interface", () => {
     await screen.findByText("Commander connection ready");
     fireEvent.click(await screen.findByRole("button", { name: "Install" }));
     await waitFor(() => expect(harness.caller.start).toHaveBeenCalledOnce());
+    expect(((vi.mocked(harness.caller.start).mock.calls[0][0] as any).metadata).chronjobs["oauth-state-ttl"].services.prune.image).toBe(defaults.stateTTLImage);
     expect((screen.getByRole("button", { name: "Installing" }) as HTMLButtonElement).disabled).toBe(true);
   });
 

@@ -2,11 +2,12 @@ import type { RPCCaller, RunItem, StartRunOptions } from "@ezenki/deploy-command
 import { inspectCommanderConnection, type CommanderConnection } from "./commanderConnection";
 
 export interface StartResponse { id: string; queued_at: string; status: number }
-export interface InstallInput { backendImage: string; runnerImage: string }
+export interface InstallInput { backendImage: string; stateTTLImage: string; runnerImage: string }
 
 export function buildInstallRun(input: InstallInput & { managerId: string; commander: CommanderConnection }): StartRunOptions {
   const managerId = requireString(input.managerId, "manager ID");
   requireImageReference(input.backendImage, "backend image");
+  requireImageReference(input.stateTTLImage, "state TTL image");
   requireImageReference(input.runnerImage, "runner image");
   const { resourceId, connectionId, managerAPI } = input.commander;
   requireString(resourceId, "Commander resource ID"); requireString(connectionId, "Commander connection ID"); requireString(managerAPI, "Commander API URL");
@@ -37,6 +38,22 @@ export function buildInstallRun(input: InstallInput & { managerId: string; comma
         health_check: {
           test: ["CMD", "/app/cloudflare-manager", "healthcheck"],
           interval_seconds: 10, timeout_seconds: 3, start_period_seconds: 15, retries: 3, wait_timeout_seconds: 180,
+        },
+      },
+    },
+    chronjobs: {
+      "oauth-state-ttl": {
+        timer: "* * * * *",
+        services: {
+          prune: {
+            image: input.stateTTLImage,
+            connections: [{ type: "Connection", data: { resource: resourceId, connection: connectionId } }],
+            environment: {
+              MANAGER_ID: managerId,
+              MANAGER_API: managerAPI,
+              MANAGER_PASSWORD: `[[secret:connection:${connectionId}:COMMANDER_PASSWORD]]`,
+            },
+          },
         },
       },
     },

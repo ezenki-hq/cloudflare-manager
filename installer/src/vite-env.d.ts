@@ -1,5 +1,6 @@
 interface ImportMetaEnv {
   readonly VITE_BACKEND_IMAGE?: string;
+  readonly VITE_STATE_TTL_IMAGE?: string;
   readonly VITE_RUNNER_IMAGE?: string;
 }
 

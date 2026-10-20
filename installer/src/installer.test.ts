@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RPCCaller, RunItem } from "@ezenki/deploy-commander-installer-interface";
 import { buildInstallRun, installationState, startInstall, type InstallInput } from "./installer";
 
-const input: InstallInput = { backendImage: "ezenki/cloudflare-manager:latest", runnerImage: "ezenki/deploy-commander-runner:latest" };
+const input: InstallInput = { backendImage: "ezenki/cloudflare-manager:latest", stateTTLImage: "ezenki/cloudflare-manager-state-ttl:latest", runnerImage: "ezenki/deploy-commander-runner:latest" };
 const commander = { resourceId: "commander-resource", connectionId: "connection-id", managerAPI: "http://commander:6080/api/v1" };
 const run = (action: string, status: number, queued_at: string): RunItem => ({ id: `${action}-${status}`, action, status, queued_at, created_at: queued_at, updated_at: queued_at });
 
@@ -14,6 +14,10 @@ describe("initial installer", () => {
     expect(metadata.values_version).toBe(1);
     expect(metadata.services["generate-jwt-secret"]).toMatchObject({ role:"runner", command:["generate-jwt-secret"], stream_output:false, capture_variables:[{stream:"stdout",pattern:"(?P<JWT_SECRET>[A-Za-z0-9_-]{43})"}] });
     expect(metadata.services["cloudflare-manager"]).toMatchObject({ depends_on:["generate-jwt-secret"], connections:[{type:"Connection",data:{resource:"commander-resource",connection:"connection-id"}}], environment:{ MANAGER_ID:"manager-uuid", MANAGER_API:commander.managerAPI, MANAGER_PASSWORD:"[[secret:connection:connection-id:COMMANDER_PASSWORD]]", JWT_SECRET:"[[variable:JWT_SECRET]]" } });
+    expect(metadata.services).not.toHaveProperty("oauth-state-ttl");
+    expect(metadata.chronjobs["oauth-state-ttl"]).toEqual({ timer:"* * * * *", services:{ prune:{ image:input.stateTTLImage, connections:[{type:"Connection",data:{resource:"commander-resource",connection:"connection-id"}}], environment:{ MANAGER_ID:"manager-uuid", MANAGER_API:commander.managerAPI, MANAGER_PASSWORD:"[[secret:connection:connection-id:COMMANDER_PASSWORD]]" } } } });
+    expect(Object.keys(metadata.chronjobs["oauth-state-ttl"].services.prune).sort()).toEqual(["connections","environment","image"].sort());
+    expect(options.action).toBe("install"); expect(metadata).not.toHaveProperty("remove_chronjobs");
     expect(metadata.object_hooks[0]).toMatchObject({ kind:"container",name:"cloudflare-manager",create:{after:{query:"UPSERT manager_settings:current SET jwt_secret = $jwt_secret",bindings:{jwt_secret:"[[variable:JWT_SECRET]]"}}} });
     expect(JSON.stringify(options)).not.toContain("oauth-client"); expect(JSON.stringify(options)).not.toContain("COMMANDER_ORIGIN");
   });
@@ -22,6 +26,9 @@ describe("initial installer", () => {
     expect(buildInstallRun({ ...input, managerId:"manager", commander }).runner).toBe("ezenki/deploy-commander-runner:latest");
     expect(() => buildInstallRun({ ...input, managerId:"", commander })).toThrow(/manager ID/i);
     expect(() => buildInstallRun({ ...input, managerId:"manager", commander:{...commander,connectionId:""} })).toThrow(/connection ID/i);
+    expect(() => buildInstallRun({ ...input, stateTTLImage:"", managerId:"manager", commander })).toThrow(/state ttl image/i);
+    expect(() => buildInstallRun({ ...input, stateTTLImage:"ezenki/ttl", managerId:"manager", commander })).toThrow(/tag or SHA-256 digest/i);
+    expect(() => buildInstallRun({ ...input, stateTTLImage:"ezenki/ttl@sha256:"+"a".repeat(64), managerId:"manager", commander })).not.toThrow();
   });
 
   it("computes install state and blocks conflicting runs", () => {
