@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 )
 
 type pendingDB struct {
+	mu      sync.Mutex
 	records map[string]pendingRecord
 	err     error
 	queries []string
@@ -24,6 +26,8 @@ type pendingDB struct {
 func newPendingDB() *pendingDB { return &pendingDB{records: make(map[string]pendingRecord)} }
 
 func (db *pendingDB) DatabaseQuery(_ context.Context, query string, bindings map[string]any) ([]commander.QueryResult, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
 	db.queries = append(db.queries, query)
 	db.args = append(db.args, bindings)
 	if db.err != nil {
@@ -64,6 +68,39 @@ func (db *pendingDB) DatabaseQuery(_ context.Context, query string, bindings map
 		return nil, err
 	}
 	return []commander.QueryResult{{Statement: 0, Status: "OK", Result: encoded}}, nil
+}
+
+func TestPendingStoreAllowsOnlyOneConcurrentConsume(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	db := newPendingDB()
+	store, err := NewPendingStore(db, "manager-a", "commander-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := PendingState{Verifier: "pkce", OpenerOrigin: "https://front.example", ClientID: "client", RedirectURI: "https://manager.example/auth/callback", ManagerID: "manager-a", ExpiresAt: now.Add(time.Minute).Unix()}
+	if err := store.Put(context.Background(), "concurrent-state", state); err != nil {
+		t.Fatal(err)
+	}
+	type outcome struct {
+		ok  bool
+		err error
+	}
+	results := make(chan outcome, 2)
+	for range 2 {
+		go func() {
+			_, err := store.Take(context.Background(), "concurrent-state", now)
+			results <- outcome{ok: err == nil, err: err}
+		}()
+	}
+	successes := 0
+	for range 2 {
+		if result := <-results; result.ok {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("concurrent consume successes = %d, want exactly one", successes)
+	}
 }
 
 func TestPendingStorePersistsOnlyHashedAndEncryptedState(t *testing.T) {

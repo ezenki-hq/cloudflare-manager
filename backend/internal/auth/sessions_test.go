@@ -34,6 +34,20 @@ func TestSessionHandleBindsTokenToManagerOriginAndExpiry(t *testing.T) {
 	}
 }
 
+func TestSessionHandleExpiresWithShorterCloudflareTokenLifetime(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	current := now
+	store := newSessionStore("manager-a", func() time.Time { return current }, 10)
+	handle, err := store.issue("private-token", "https://frontend.example", now.Add(5*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	current = now.Add(5 * time.Minute)
+	if _, ok := store.resolve(handle, "https://frontend.example"); ok {
+		t.Fatal("session handle outlived Cloudflare token expiry")
+	}
+}
+
 func TestSessionStoreEvictsEarliestExpiryAndRestartClearsHandles(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	store := newSessionStore("manager-a", func() time.Time { return now }, 2)
