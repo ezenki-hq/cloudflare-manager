@@ -14,6 +14,8 @@ export interface ConnectionSummary { connection: { id: string; manager?: string;
 export interface ProvisionResult { connection_id: string; token_id: string; access_key_id: string; secret_access_key: string }
 
 export interface BackendAPI {
+  setSessionHandle(handle: string): void;
+  clearSessionHandle(): void;
   clientID(): Promise<string>;
   saveClientID(value: string): Promise<void>;
   startOAuth(clientId: string, openerOrigin: string, apiOrigin: string): Promise<{ authorization_url: string }>;
@@ -45,16 +47,34 @@ export interface BackendAPI {
 
 export function createBackendAPI(baseURL: string, caller: RPCCaller, fetcher: typeof fetch = fetch, originProvider:()=>string = () => typeof window === "undefined" ? new URL(baseURL).origin : window.location.origin): BackendAPI {
   const base = new URL(baseURL, originProvider()).origin;
+  const sessionHandleKey = () => `cloudflare-manager:session:${base}:${originProvider()}`;
+  let memoryHandle = "";
+  const readSessionHandle = () => {
+    try { return typeof window !== "undefined" ? window.sessionStorage.getItem(sessionHandleKey()) || "" : memoryHandle; }
+    catch { return memoryHandle; }
+  };
+  const setSessionHandle = (handle: string) => {
+    memoryHandle = handle;
+    try { if (typeof window !== "undefined") window.sessionStorage.setItem(sessionHandleKey(), handle); } catch { /* tab storage may be blocked */ }
+  };
+  const clearSessionHandle = () => {
+    memoryHandle = "";
+    try { if (typeof window !== "undefined") window.sessionStorage.removeItem(sessionHandleKey()); } catch { /* tab storage may be blocked */ }
+  };
   const send = async <T>(path:string,data:unknown={}):Promise<T>=>{
     const settings=await loadManagerSettings(caller);if(!settings.jwtSecret)throw new Error("Manager JWT secret is missing; reinstall the manager to initialize it");
     const managerId=await caller.getManager();const origin=originProvider();const token=await signRequestJWT(settings.jwtSecret,managerId,path,origin,data);
-    const response=await fetcher(`${base}${path}`,{method:"POST",credentials:"include",headers:{Accept:"application/json","Content-Type":"application/jwt"},body:token});
+    const handle=readSessionHandle();
+    const headers:Record<string,string>={Accept:"application/json","Content-Type":"application/jwt"};if(handle)headers["X-Cloudflare-Session"]=handle;
+    const response=await fetcher(`${base}${path}`,{method:"POST",credentials:"include",headers,body:token});
     if(response.status===204)return undefined as T;
     const payload:unknown=await response.json().catch(()=>undefined);
-    if(!response.ok){const message=isRecord(payload)&&isRecord(payload.error)&&typeof payload.error.message==="string"?payload.error.message:`Manager API request failed (${response.status})`;const error=new Error(message) as Error&{status?:number};error.status=response.status;throw error}
+    if(!response.ok){if(response.status===401)clearSessionHandle();const message=isRecord(payload)&&isRecord(payload.error)&&typeof payload.error.message==="string"?payload.error.message:`Manager API request failed (${response.status})`;const error=new Error(message) as Error&{status?:number};error.status=response.status;throw error}
     return payload as T;
   };
   return {
+    setSessionHandle,
+    clearSessionHandle,
     clientID:async()=> (await loadManagerSettings(caller)).cloudflareClientId,
     saveClientID:(value)=>caller.databaseQuery("UPSERT manager_settings:current MERGE { cloudflare_client_id: $client_id }",{client_id:value.trim()}).then((r)=>{if(!r.results.length||r.results.some((x)=>x.status!=="OK"))throw new Error("Manager settings could not be saved")}),
     startOAuth:(clientId,openerOrigin,apiOrigin)=>send("/auth/start",{client_id:clientId,opener_origin:openerOrigin,api_origin:apiOrigin}),

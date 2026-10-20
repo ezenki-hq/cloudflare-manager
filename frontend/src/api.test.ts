@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it, vi } from "vitest";
 import type { RPCCaller } from "@ezenki/deploy-commander-installer-interface";
 import { createBackendAPI } from "./api";
@@ -10,6 +11,25 @@ describe("signed manager API client",()=>{
   it("sends a route-bound compact JWT in the whole body with credentials",async()=>{
     const fetcher=vi.fn().mockResolvedValue(new Response(JSON.stringify({authenticated:true}),{status:200,headers:{"Content-Type":"application/json"}}));const {api}=setup(fetcher);await api.session();
     const [url,init]=vi.mocked(fetcher).mock.calls[0] as unknown as [string,RequestInit];expect(url).toBe("https://manager.example.test/api/session");expect(init.method).toBe("POST");expect(init.credentials).toBe("include");expect(new Headers(init.headers).get("Content-Type")).toBe("application/jwt");expect(claims(init)).toMatchObject({aud:"manager-1",path:"/api/session",origin:"https://frontend.example.test",data:{}});
+  });
+  it("sends a tab-scoped session handle and rehydrates it after reload",async()=>{
+    window.sessionStorage.clear();
+    const fetcher=vi.fn().mockResolvedValue(new Response(JSON.stringify({authenticated:true}),{status:200,headers:{"Content-Type":"application/json"}}));
+    const {caller,api}=setup(fetcher);api.setSessionHandle("opaque-handle");
+    const reloaded=createBackendAPI("https://manager.example.test",caller,fetcher,()=>"https://frontend.example.test");
+    await reloaded.session();
+    const [,init]=vi.mocked(fetcher).mock.calls[0] as unknown as [string,RequestInit];expect(new Headers(init.headers).get("X-Cloudflare-Session")).toBe("opaque-handle");
+  });
+  it("clears an invalid handle after a 401",async()=>{
+    sessionStorage.clear();
+    const fetcher=vi.fn().mockResolvedValue(new Response(JSON.stringify({error:{message:"Unauthorized"}}),{status:401}));const {api}=setup(fetcher);api.setSessionHandle("stale-handle");
+    await expect(api.session()).rejects.toMatchObject({status:401});
+    expect(window.sessionStorage.length).toBe(0);
+  });
+  it("uses the in-memory handle when sessionStorage is unavailable",async()=>{
+    const original=Object.getOwnPropertyDescriptor(window,"sessionStorage");Object.defineProperty(window,"sessionStorage",{configurable:true,get:()=>{throw new Error("storage blocked")}});
+    try {const fetcher=vi.fn().mockResolvedValue(new Response(JSON.stringify({authenticated:true}),{status:200,headers:{"Content-Type":"application/json"}}));const {api}=setup(fetcher);api.setSessionHandle("memory-handle");await api.session();const [,init]=vi.mocked(fetcher).mock.calls[0] as unknown as [string,RequestInit];expect(new Headers(init.headers).get("X-Cloudflare-Session")).toBe("memory-handle");}
+    finally {if(original)Object.defineProperty(window,"sessionStorage",original);else delete (window as any).sessionStorage;}
   });
   it("keeps request data inside the JWT and maps bucket methods to dedicated routes",async()=>{
     const fetcher=vi.fn().mockResolvedValue(new Response(JSON.stringify({buckets:[]}),{status:200,headers:{"Content-Type":"application/json"}}));const {api}=setup(fetcher);await api.listBuckets("account-1","eu","next");const [,init]=vi.mocked(fetcher).mock.calls[0] as unknown as [string,RequestInit];expect(claims(init)).toMatchObject({path:"/api/buckets/list",data:{account_id:"account-1",jurisdiction:"eu",cursor:"next"}});expect(String(init.body)).not.toContain("?");

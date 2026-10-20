@@ -209,14 +209,15 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
 
   useEffect(() => {
     const listener = (event: MessageEvent) => {
-      if (event.origin !== apiOrigin(backendOrigin) || event.source !== popupRef.current || event.data?.type !== "cloudflare-oauth-complete") return;
+      if (event.origin !== apiOrigin(backendOrigin) || event.source !== popupRef.current || event.data?.type !== "cloudflare-oauth-complete" || typeof event.data.session_handle !== "string" || !event.data.session_handle.trim()) return;
+      api.setSessionHandle(event.data.session_handle);
       void (async () => {
         try {
           const session = await api.session();
           if (session.authenticated) { popupRef.current = null; setAuth("signed-in"); setAuthError(""); }
-          else { setAuth("blocked"); }
+          else { api.clearSessionHandle(); setAuth("blocked"); setAuthError("Cloudflare authorization finished, but the manager rejected the session. Try signing in again."); }
         } catch (error) {
-          if (statusOf(error) === 401) { setAuth("blocked"); }
+          if (statusOf(error) === 401) { api.clearSessionHandle(); setAuth("blocked"); setAuthError("Cloudflare authorization finished, but the manager rejected the session. Try signing in again."); }
           else { setAuth("unavailable"); setAuthError(message(error)); }
         }
       })();
@@ -442,8 +443,9 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
       <h2>{auth === "unavailable" ? "Manager service is unavailable" : "Connect your Cloudflare account"}</h2>
       <p>{auth === "unavailable" ? "The manager API did not respond. Check the configured same-site route and service health." : "Sign in to Cloudflare to see your accounts. Access is personal to your Cloudflare user and is not shared with application credentials."}</p>
       {authError && <p className="inline-error" role="alert">{authError}</p>}
-      {auth === "blocked" && <div className="cookie-help"><strong>Authorization finished, but this frame cannot read its session.</strong><p>Route the manager and Deploy Commander through the same HTTPS site. The Go API must allow the exact Commander origin, and the browser must accept the manager's host-only cookie in this embedded flow. Try opening the manager in a top-level tab if your browser blocks third-party cookies.</p></div>}
+      {auth === "blocked" && <p className="auth-hint">Try signing in again to create a fresh manager session.</p>}
       <button className="button button-primary" onClick={signIn} disabled={!clientID.trim()}>Sign in with Cloudflare</button>
+      {auth === "blocked" && <button className="button button-secondary" onClick={signIn} disabled={!clientID.trim()}>Retry sign-in</button>}
       {!clientID.trim() && <p className="auth-hint">Save the OAuth client ID above before signing in.</p>}
       {auth === "unavailable" && <button className="button button-secondary" onClick={() => { setAuth("checking"); void api.session().then((result) => setAuth(result.authenticated ? "signed-in" : "signed-out")).catch((error) => { setAuth(statusOf(error) === 401 ? "signed-out" : "unavailable"); setAuthError(message(error)); }); }}>Retry connection</button>}
     </section> : <>

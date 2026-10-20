@@ -11,6 +11,8 @@ function setup(apiOverrides: Partial<BackendAPI> = {}, callerOverrides: Partial<
     clientID: vi.fn().mockResolvedValue("oauth-client"),
     saveClientID: vi.fn().mockResolvedValue(undefined),
     startOAuth: vi.fn().mockResolvedValue({ authorization_url: "https://cloudflare.example/authorize" }),
+    setSessionHandle: vi.fn(),
+    clearSessionHandle: vi.fn(),
     session: vi.fn().mockResolvedValue({ authenticated: true }),
     listAccounts: vi.fn().mockResolvedValue([{ id: "account-1", name: "Production" }]),
     listZones: vi.fn().mockResolvedValue([{ id: "zone-1", name: "example.test" }]),
@@ -282,15 +284,16 @@ describe("Cloudflare Manager interface", () => {
     expect((screen.getByRole("button", { name: /sign in with cloudflare/i }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("shows same-site cookie guidance when popup authorization completes but session stays unauthorized", async () => {
+  it("shows a useful retry state when the new OAuth session is not accepted", async () => {
     const popup = { close: vi.fn(), location: { href: "" } } as unknown as Window;
     vi.spyOn(window, "open").mockReturnValue(popup);
     const { api, bridge } = setup({ session: vi.fn().mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 })) });
     render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
     fireEvent.click(await screen.findByRole("button", { name: /sign in with cloudflare/i }));
-    fireEvent(window, new MessageEvent("message", { origin: "https://cf-manager.example.test", source: popup, data: { type: "cloudflare-oauth-complete" } }));
-    expect(await screen.findByText(/same https site/i)).toBeTruthy();
-    expect(await screen.findByText(/third.party cookies/i)).toBeTruthy();
+    fireEvent(window, new MessageEvent("message", { origin: "https://cf-manager.example.test", source: popup, data: { type: "cloudflare-oauth-complete", session_handle: "handle-1" } }));
+    expect(await screen.findByRole("button", { name: "Retry sign-in" })).toBeTruthy();
+    expect(screen.queryByText(/third.party cookies/i)).toBeNull();
+    expect(api.clearSessionHandle).toHaveBeenCalledOnce();
   });
 
   it("refreshes the manager session after Cloudflare OAuth completes", async () => {
@@ -304,10 +307,25 @@ describe("Cloudflare Manager interface", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /sign in with cloudflare/i }));
     await waitFor(() => expect(api.startOAuth).toHaveBeenCalledOnce());
-    fireEvent(window, new MessageEvent("message", { origin: "https://cf-manager.example.test", source: popup, data: { type: "cloudflare-oauth-complete" } }));
+    fireEvent(window, new MessageEvent("message", { origin: "https://cf-manager.example.test", source: popup, data: { type: "cloudflare-oauth-complete", session_handle: "handle-2" } }));
 
     expect(await screen.findByText("Cloudflare connected")).toBeTruthy();
     expect(session).toHaveBeenCalledTimes(2);
+    expect(api.setSessionHandle).toHaveBeenCalledWith("handle-2");
+  });
+
+  it("ignores forged, empty-handle, and wrong-origin completion messages", async () => {
+    const popup = { close: vi.fn(), location: { href: "" } } as unknown as Window;
+    vi.spyOn(window, "open").mockReturnValue(popup);
+    const { api, bridge } = setup({ session: vi.fn().mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 })) });
+    render(<App bridge={bridge} api={api} backendOrigin="https://cf-manager.example.test" />);
+    fireEvent.click(await screen.findByRole("button", { name: /sign in with cloudflare/i }));
+    await waitFor(() => expect(api.startOAuth).toHaveBeenCalledOnce());
+    fireEvent(window, new MessageEvent("message", { origin: "https://cf-manager.example.test", source: window, data: { type: "cloudflare-oauth-complete", session_handle: "forged" } }));
+    fireEvent(window, new MessageEvent("message", { origin: "https://cf-manager.example.test", source: popup, data: { type: "cloudflare-oauth-complete", session_handle: "" } }));
+    fireEvent(window, new MessageEvent("message", { origin: "https://evil.example.test", source: popup, data: { type: "cloudflare-oauth-complete", session_handle: "forged" } }));
+    expect(api.setSessionHandle).not.toHaveBeenCalled();
+    expect(api.session).toHaveBeenCalledOnce();
   });
 
   it("loads paginated buckets, shows domain status, and confirms bucket deletion", async () => {
