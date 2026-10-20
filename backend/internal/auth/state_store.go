@@ -92,7 +92,11 @@ func (s *PendingStore) Put(ctx context.Context, rawState string, value PendingSt
 	if err != nil {
 		return errors.Join(ErrStateStoreUnavailable, err)
 	}
-	if len(results) != 1 {
+	if len(results) != 1 || results[0].Statement != 0 || results[0].Status != "OK" {
+		return errors.New("Commander did not confirm pending OAuth state creation")
+	}
+	var created []pendingRecord
+	if err := json.Unmarshal(results[0].Result, &created); err != nil || len(created) != 1 || created[0].ExpiresAt != value.ExpiresAt || created[0].Payload != encoded {
 		return errors.New("Commander did not confirm pending OAuth state creation")
 	}
 	return nil

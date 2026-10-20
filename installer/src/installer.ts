@@ -97,8 +97,25 @@ function isActive(status: number | undefined): boolean { return status === 0 || 
 function parseRunTime(run: RunItem): number { const timestamp = Date.parse(run.queued_at); if (!Number.isFinite(timestamp)) throw new Error("Install and teardown run timestamps are invalid"); return timestamp; }
 function requireImageReference(value: string, label: string): void {
   if (!value.trim() || /\s/.test(value)) throw new Error(`${label} is required`);
-  if (/@sha256:[a-f0-9]{64}$/.test(value)) return;
+  const digest = value.match(/^(.+)@sha256:([a-f0-9]{64})$/);
+  if (digest) {
+    if (validImageName(digest[1])) return;
+    throw new Error(`${label} must use a valid image name and SHA-256 digest`);
+  }
   const lastPart = value.slice(value.lastIndexOf("/") + 1), separator = lastPart.lastIndexOf(":");
   if (separator <= 0) throw new Error(`${label} must use a tag or SHA-256 digest`);
+  const name = value.slice(0, value.lastIndexOf("/") + 1) + lastPart.slice(0, separator);
+  const tag = lastPart.slice(separator + 1);
+  if (!validImageName(name) || !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$/.test(tag)) throw new Error(`${label} must use a valid tagged image reference or SHA-256 digest`);
+}
+function validImageName(name: string): boolean {
+  if (!name || name.length > 255 || name.startsWith("/") || name.endsWith("/")) return false;
+  return name.split("/").every((part, index) => {
+    if (index === 0 && part.includes(":")) {
+      const [host, port, ...rest] = part.split(":");
+      return rest.length === 0 && !!host && /^[0-9]{1,5}$/.test(port) && /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/.test(host);
+    }
+    return /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/.test(part);
+  });
 }
 function requireString(value: string, label: string): string { const result = value.trim(); if (!result || /[\r\n]/.test(result)) throw new Error(`${label} is required`); return result; }

@@ -247,6 +247,27 @@ func (invalidCleanupResultDB) DatabaseQuery(context.Context, string, map[string]
 	return []commander.QueryResult{{Statement: 0, Status: "OK", Result: json.RawMessage(`null`)}}, nil
 }
 
+type fixedQueryResultDB struct{ result json.RawMessage }
+
+func (db fixedQueryResultDB) DatabaseQuery(context.Context, string, map[string]any) ([]commander.QueryResult, error) {
+	return []commander.QueryResult{{Statement: 0, Status: "OK", Result: db.result}}, nil
+}
+
+func TestPendingStoreRejectsUnconfirmedCreateResults(t *testing.T) {
+	for _, result := range []string{"null", "[]", "[{}]"} {
+		t.Run(result, func(t *testing.T) {
+			store, err := NewPendingStore(fixedQueryResultDB{result: json.RawMessage(result)}, "manager-a", "commander-password")
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := PendingState{Verifier: "v", OpenerOrigin: "https://front.example", ClientID: "client", RedirectURI: "https://manager.example/auth/callback", ManagerID: "manager-a", ExpiresAt: time.Now().Add(time.Minute).Unix()}
+			if err := store.Put(context.Background(), "state", state); err == nil {
+				t.Fatal("unconfirmed create result was accepted")
+			}
+		})
+	}
+}
+
 func TestPendingStoreRejectsInvalidPruneResultShape(t *testing.T) {
 	store, err := NewPendingStore(invalidCleanupResultDB{}, "manager-a", "commander-password")
 	if err != nil {
