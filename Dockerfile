@@ -18,9 +18,10 @@ COPY backend/ ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
     export CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH"; \
     if [ "$TARGETARCH" = "arm" ]; then export GOARM="${TARGETVARIANT#v}"; fi; \
-    go build -p="$GO_BUILD_PARALLELISM" -trimpath -ldflags="-s -w" -o /out/cloudflare-manager ./cmd/cloudflare-manager
+    go build -p="$GO_BUILD_PARALLELISM" -trimpath -ldflags="-s -w" -o /out/cloudflare-manager ./cmd/cloudflare-manager && \
+    go build -p="$GO_BUILD_PARALLELISM" -trimpath -ldflags="-s -w" -o /out/cloudflare-manager-state-ttl ./cmd/state-ttl
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot AS service
 WORKDIR /app
 COPY --from=backend-build --chown=65532:65532 /out/cloudflare-manager /app/cloudflare-manager
 COPY --from=frontend-build --chown=65532:65532 /src/frontend/dist /app/frontend/dist
@@ -28,3 +29,9 @@ ENV PORT=8080 STATIC_DIR=/app/frontend/dist
 USER 65532:65532
 EXPOSE 8080
 ENTRYPOINT ["/app/cloudflare-manager"]
+
+FROM gcr.io/distroless/static-debian12:nonroot AS state-ttl
+WORKDIR /app
+COPY --from=backend-build --chown=65532:65532 /out/cloudflare-manager-state-ttl /app/cloudflare-manager-state-ttl
+USER 65532:65532
+ENTRYPOINT ["/app/cloudflare-manager-state-ttl"]
