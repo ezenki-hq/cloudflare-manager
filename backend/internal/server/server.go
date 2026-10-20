@@ -144,12 +144,13 @@ func (s *Server) cloudflareToken(w http.ResponseWriter, r *http.Request) (string
 	}
 	return token, nil
 }
-func (s *Server) upstreamError(w http.ResponseWriter, err error) error {
+func (s *Server) upstreamError(w http.ResponseWriter, r *http.Request, err error) error {
 	status := http.StatusBadGateway
 	var apiErr *cloudflare.APIError
 	if errors.As(err, &apiErr) {
 		if apiErr.Status == http.StatusUnauthorized && s.oauth != nil {
 			s.oauth.ClearToken(w)
+			s.oauth.ClearHandle(r)
 		}
 		if apiErr.Status >= 400 && apiErr.Status < 500 {
 			status = apiErr.Status
@@ -176,7 +177,7 @@ func (s *Server) corsAndCache(next http.Handler) http.Handler {
 				return
 			}
 			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, "+auth.SessionHeader)
 			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 			w.WriteHeader(http.StatusNoContent)
 			return

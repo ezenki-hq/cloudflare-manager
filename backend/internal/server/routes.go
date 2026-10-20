@@ -86,7 +86,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 		}
 		v, e := s.cf.ListAccounts(r.Context(), t)
 		if e != nil {
-			return s.upstreamError(w, e)
+			return s.upstreamError(w, r, e)
 		}
 		writeJSON(w, http.StatusOK, v)
 		return nil
@@ -100,7 +100,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 		}
 		v, e := s.cf.ListZones(r.Context(), t, d.AccountID)
 		if e != nil {
-			return s.upstreamError(w, e)
+			return s.upstreamError(w, r, e)
 		}
 		writeJSON(w, http.StatusOK, v)
 		return nil
@@ -120,7 +120,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 		}
 		v, e := s.cf.ListBuckets(r.Context(), t, d.AccountID, d.Jurisdiction, d.Cursor)
 		if e != nil {
-			return s.upstreamError(w, e)
+			return s.upstreamError(w, r, e)
 		}
 		writeJSON(w, http.StatusOK, v)
 		return nil
@@ -134,7 +134,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 		}
 		v, e := s.cf.GetBucket(r.Context(), t, d.AccountID, d.Jurisdiction, d.Bucket)
 		if e != nil {
-			return s.upstreamError(w, e)
+			return s.upstreamError(w, r, e)
 		}
 		writeJSON(w, http.StatusOK, v)
 		return nil
@@ -148,7 +148,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 		}
 		v, e := s.cf.CreateBucket(r.Context(), t, d.AccountID, d.Jurisdiction, d.Bucket)
 		if e != nil {
-			return s.upstreamError(w, e)
+			return s.upstreamError(w, r, e)
 		}
 		writeJSON(w, http.StatusCreated, v)
 		return nil
@@ -162,10 +162,10 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 		}
 		if s.manager != nil {
 			if e := s.manager.DeleteBucket(r.Context(), t, d.AccountID, d.Jurisdiction, d.Bucket); e != nil {
-				return s.upstreamError(w, e)
+				return s.upstreamError(w, r, e)
 			}
 		} else if e := s.cf.DeleteBucket(r.Context(), t, d.AccountID, d.Jurisdiction, d.Bucket); e != nil {
-			return s.upstreamError(w, e)
+			return s.upstreamError(w, r, e)
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return nil
@@ -317,7 +317,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 		}
 		v, e := s.cf.ListDomains(r.Context(), t, d.AccountID, d.Jurisdiction, d.Bucket)
 		if e != nil {
-			return s.upstreamError(w, e)
+			return s.upstreamError(w, r, e)
 		}
 		writeJSON(w, http.StatusOK, v)
 		return nil
@@ -330,7 +330,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 			return err
 		}
 		if e := s.cf.AttachDomain(r.Context(), t, d.AccountID, d.Jurisdiction, d.Bucket, d.Domain, d.ZoneID); e != nil {
-			return s.upstreamError(w, e)
+			return s.upstreamError(w, r, e)
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return nil
@@ -343,7 +343,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 			return err
 		}
 		if e := s.cf.DetachDomain(r.Context(), t, d.AccountID, d.Jurisdiction, d.Bucket, d.Domain); e != nil {
-			return s.upstreamError(w, e)
+			return s.upstreamError(w, r, e)
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return nil
@@ -357,7 +357,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 		}
 		v, e := s.cf.CreateCredential(r.Context(), t, d.AccountID, d.Jurisdiction, d.Bucket, d.ConnectionID, d.Permission)
 		if e != nil {
-			return s.upstreamError(w, e)
+			return s.upstreamError(w, r, e)
 		}
 		writeJSON(w, http.StatusOK, v)
 		return nil
@@ -371,7 +371,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 		}
 		v, e := s.cf.FindCredential(r.Context(), t, d.AccountID, d.ConnectionID)
 		if e != nil {
-			return s.upstreamError(w, e)
+			return s.upstreamError(w, r, e)
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"token_id": v})
 		return nil
@@ -384,7 +384,7 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 			return err
 		}
 		if e := s.cf.RevokeCredential(r.Context(), t, d.AccountID, d.TokenID, d.ConnectionID); e != nil {
-			return s.upstreamError(w, e)
+			return s.upstreamError(w, r, e)
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return nil

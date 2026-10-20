@@ -35,9 +35,10 @@ type StartInput struct {
 	APIOrigin    string `json:"api_origin"`
 }
 type Handler struct {
-	cfg    Config
-	client *http.Client
-	now    func() time.Time
+	cfg      Config
+	client   *http.Client
+	now      func() time.Time
+	sessions *sessionStore
 }
 type tokenResponse struct {
 	AccessToken string `json:"access_token"`
@@ -57,12 +58,18 @@ func NewHandler(cfg Config, client *http.Client, now func() time.Time) (*Handler
 	if now == nil {
 		now = time.Now
 	}
-	return &Handler{cfg: cfg, client: client, now: now}, nil
+	return &Handler{cfg: cfg, client: client, now: now, sessions: newSessionStore(cfg.ManagerID, now, defaultSessionCapacity)}, nil
 }
 
 // Register installs only the callback exception. OAuth start is a signed POST route.
 func (h *Handler) Register(mux *http.ServeMux) { mux.HandleFunc("GET /auth/callback", h.callback) }
 func (h *Handler) Token(r *http.Request) (string, bool) {
+	if handle := r.Header.Get(SessionHeader); handle != "" {
+		if h.sessions == nil {
+			return "", false
+		}
+		return h.sessions.resolve(handle, r.Header.Get("Origin"))
+	}
 	secure := requestUsesHTTPS(r)
 	name := insecureAccessCookieName
 	if secure {
@@ -196,6 +203,12 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.now()
 	secure := strings.HasPrefix(state.RedirectURI, "https://")
+	handle, err := h.sessions.issue(access, state.OpenerOrigin, now.Add(expires))
+	if err != nil {
+		h.logCallbackFailure(r, flowID, "session_handle_creation_failed")
+		http.Error(w, "Cloudflare signed in, but the manager session could not be created. Return to Cloudflare Manager and try again.", http.StatusInternalServerError)
+		return
+	}
 	accessName := insecureAccessCookieName
 	if secure {
 		accessName = accessCookieName
@@ -205,8 +218,9 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	message, _ := json.Marshal(map[string]string{"type": "cloudflare-oauth-complete", "session_handle": handle})
 	w.WriteHeader(http.StatusOK)
-	_, _ = io.WriteString(w, `<!doctype html><meta charset="utf-8"><title>Cloudflare connected</title><script>if(window.opener){window.opener.postMessage({type:"cloudflare-oauth-complete"},`+quote(state.OpenerOrigin)+`)}window.close()</script><p>Cloudflare authorization finished. You can close this window.</p>`)
+	_, _ = io.WriteString(w, `<!doctype html><meta charset="utf-8"><title>Cloudflare connected</title><script>if(window.opener){window.opener.postMessage(`+string(message)+`,`+quote(state.OpenerOrigin)+`)}window.close()</script><p>Cloudflare authorization finished. You can close this window.</p>`)
 	slog.Info("OAuth callback completed", "event", "oauth_callback", "flow_id", flowID, "reason", "success", "request_host", r.Host)
 }
 

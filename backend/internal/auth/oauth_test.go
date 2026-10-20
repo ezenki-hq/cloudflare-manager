@@ -136,6 +136,9 @@ func TestOAuthStartAndCallbackUseSignedStateAndSavedClientID(t *testing.T) {
 	if out.Code != http.StatusOK || gotForm.Get("client_id") != "client-before-edit" || gotForm.Get("redirect_uri") != "https://manager.example.test/auth/callback" || !strings.Contains(out.Body.String(), `"https://frontend.example.test"`) {
 		t.Fatalf("status=%d form=%v body=%s", out.Code, gotForm, out.Body.String())
 	}
+	if !strings.Contains(out.Body.String(), `"session_handle":`) || strings.Contains(out.Body.String(), "opaque-access-token") {
+		t.Fatalf("callback did not safely deliver a session handle: %s", out.Body.String())
+	}
 	var access bool
 	for _, c := range out.Result().Cookies() {
 		if c.Name == accessCookieName && c.HttpOnly && c.Secure && c.Value == "opaque-access-token" {
