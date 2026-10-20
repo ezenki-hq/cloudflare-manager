@@ -419,7 +419,13 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
           <div><dt>Grant type</dt><dd>Authorization Code</dd></div>
           <div><dt>Token authentication method</dt><dd>None (PKCE)</dd></div>
           <div><dt>Redirect URLs</dt><dd><code>{window.location.origin}/auth/callback</code></dd></div>
-          <div><dt>Required scopes</dt><dd>Account Read, Zone Read, Workers R2 Storage Read, Workers R2 Storage Write, Account API Tokens Read, and Account API Tokens Write<br /><code>account.read zone.read workers-r2.read workers-r2.write account-api-tokens.read account-api-tokens.write</code></dd></div>
+          <div><dt>Required scopes</dt><dd><ul className="oauth-scope-list">
+            <li><span>Account Settings Read</span><code>account-settings.read</code></li>
+            <li><span>Zone Read</span><code>zone.read</code></li>
+            <li><span>Workers R2 Storage Read</span><code>workers-r2.read</code></li>
+            <li><span>Workers R2 Storage Write</span><code>workers-r2.write</code></li>
+            <li><span>Account API Tokens Write</span><code>account-api-tokens.write</code></li>
+          </ul></dd></div>
         </dl>
         <p>Copy the client ID Cloudflare gives you into the field below. This PKCE client does not use a client secret.</p>
         <p className="oauth-setup-note">On Cloudflare’s consent screen, select the account to review these requested permissions before authorizing.</p>

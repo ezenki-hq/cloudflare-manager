@@ -34,9 +34,11 @@ func TestTokenReturnsUnauthenticatedWhenCookieIsMissingOrEmpty(t *testing.T) {
 	}{
 		{name: "missing"},
 		{name: "empty", cookie: &http.Cookie{Name: accessCookieName, Value: ""}},
+		{name: "insecure cookie on HTTPS origin", cookie: &http.Cookie{Name: insecureAccessCookieName, Value: "http-token"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := httptest.NewRequest(http.MethodPost, "/api/session", nil)
+			r := httptest.NewRequest(http.MethodPost, "https://manager.test/api/session", nil)
+			r.Header.Set("Origin", "https://manager.test")
 			if tc.cookie != nil {
 				r.AddCookie(tc.cookie)
 			}
@@ -65,11 +67,11 @@ func TestOAuthStartAndCallbackUseSignedStateAndSavedClientID(t *testing.T) {
 		t.Fatal(err)
 	}
 	parsed, _ := url.Parse(authURL)
-	if parsed.Query().Get("client_id") != "client-before-edit" || parsed.Query().Get("redirect_uri") != "https://manager.example.test/auth/callback" || parsed.Query().Get("code_challenge_method") != "S256" || parsed.Query().Get("scope") != "account.read zone.read workers-r2.read workers-r2.write account-api-tokens.read account-api-tokens.write" {
+	if parsed.Query().Get("client_id") != "client-before-edit" || parsed.Query().Get("redirect_uri") != "https://manager.example.test/auth/callback" || parsed.Query().Get("code_challenge_method") != "S256" || parsed.Query().Get("scope") != "account-settings.read zone.read workers-r2.read workers-r2.write account-api-tokens.write" {
 		t.Fatalf("unexpected URL %s", authURL)
 	}
 	cookies := recorder.Result().Cookies()
-	if len(cookies) != 1 || !cookies[0].HttpOnly || !cookies[0].Secure {
+	if len(cookies) != 1 || cookies[0].Name != stateCookieName || !cookies[0].HttpOnly || !cookies[0].Secure {
 		t.Fatalf("unsafe state cookie: %#v", cookies)
 	}
 	state, err := h.decodeTransient(cookies[0].Value)
@@ -114,7 +116,9 @@ func TestOAuthStartChecksAPIHostAndOrigin(t *testing.T) {
 }
 
 func TestOAuthStartAcceptsHTTPOriginsAndBuildsHTTPRedirect(t *testing.T) {
-	ts := httptest.NewServer(http.NotFoundHandler())
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "local-access-token", "expires_in": 900})
+	}))
 	defer ts.Close()
 	h := oauthTestHandler(t, ts, time.Now)
 	r := httptest.NewRequest(http.MethodPost, "http://manager.test/auth/start", nil)
@@ -126,16 +130,57 @@ func TestOAuthStartAcceptsHTTPOriginsAndBuildsHTTPRedirect(t *testing.T) {
 	}
 	var stateCookie *http.Cookie
 	for _, cookie := range w.Result().Cookies() {
-		if cookie.Name == stateCookieName {
+		if cookie.Name == insecureStateCookieName {
 			stateCookie = cookie
 		}
 	}
-	if stateCookie == nil || !stateCookie.Secure {
-		t.Fatal("HTTP flow must retain the Secure state cookie")
+	if stateCookie == nil || stateCookie.Secure || !stateCookie.HttpOnly {
+		t.Fatal("HTTP flow must use an HttpOnly state cookie without Secure")
 	}
 	state, err := h.decodeTransient(stateCookie.Value)
 	if err != nil || state.RedirectURI != "http://manager.test/auth/callback" {
 		t.Fatalf("state=%+v err=%v", state, err)
+	}
+	callback := httptest.NewRequest(http.MethodGet, "http://manager.test/auth/callback?code=abc&state="+url.QueryEscape(state.State), nil)
+	callback.AddCookie(stateCookie)
+	out := httptest.NewRecorder()
+	h.callback(out, callback)
+	if out.Code != http.StatusOK {
+		t.Fatalf("HTTP callback status=%d body=%s", out.Code, out.Body.String())
+	}
+	var accessCookie *http.Cookie
+	for _, cookie := range out.Result().Cookies() {
+		if cookie.Name == insecureAccessCookieName {
+			accessCookie = cookie
+		}
+	}
+	if accessCookie == nil || accessCookie.Secure || !accessCookie.HttpOnly {
+		t.Fatal("HTTP flow must set an HttpOnly access cookie without Secure")
+	}
+	request := httptest.NewRequest(http.MethodPost, "http://manager.test/api/session", nil)
+	request.Header.Set("Origin", "http://manager.test")
+	request.AddCookie(accessCookie)
+	if token, ok := h.Token(request); !ok || token != "local-access-token" {
+		t.Fatalf("HTTP Token() = (%q, %t), want local access token", token, ok)
+	}
+}
+
+func TestOAuthProviderErrorsAreExplainedWithoutStateCookie(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+	h := oauthTestHandler(t, ts, time.Now)
+	for _, tc := range []struct{ code, want string }{
+		{"invalid_scope", "account-settings.read zone.read workers-r2.read workers-r2.write account-api-tokens.write"},
+		{"access_denied", "Cloudflare authorization was not completed."},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/auth/callback?error="+tc.code+"&error_description=do-not-reflect&state=state", nil)
+			w := httptest.NewRecorder()
+			h.callback(w, r)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), tc.want) || strings.Contains(w.Body.String(), "do-not-reflect") {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
 	}
 }
 

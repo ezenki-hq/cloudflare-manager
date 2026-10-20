@@ -17,11 +17,13 @@ import (
 )
 
 const (
-	stateCookieName  = "__Host-cf-oauth"
-	accessCookieName = "__Host-cf-access"
-	stateLifetime    = 10 * time.Minute
-	maxTokenResponse = 1 << 20
-	requiredScopes   = "account.read zone.read workers-r2.read workers-r2.write account-api-tokens.read account-api-tokens.write"
+	stateCookieName          = "__Host-cf-oauth"
+	accessCookieName         = "__Host-cf-access"
+	insecureStateCookieName  = "cf-oauth"
+	insecureAccessCookieName = "cf-access"
+	stateLifetime            = 10 * time.Minute
+	maxTokenResponse         = 1 << 20
+	requiredScopes           = "account-settings.read zone.read workers-r2.read workers-r2.write account-api-tokens.write"
 )
 
 type Config struct {
@@ -73,14 +75,19 @@ func NewHandler(cfg Config, client *http.Client, now func() time.Time) (*Handler
 // Register installs only the callback exception. OAuth start is a signed POST route.
 func (h *Handler) Register(mux *http.ServeMux) { mux.HandleFunc("GET /auth/callback", h.callback) }
 func (h *Handler) Token(r *http.Request) (string, bool) {
-	c, e := r.Cookie(accessCookieName)
-	if e != nil || c == nil || c.Value == "" {
-		return "", false
+	secure := requestUsesHTTPS(r)
+	name := insecureAccessCookieName
+	if secure {
+		name = accessCookieName
 	}
-	return c.Value, true
+	if c, err := r.Cookie(name); err == nil && c != nil && c.Value != "" {
+		return c.Value, true
+	}
+	return "", false
 }
 func (h *Handler) ClearToken(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: accessCookieName, Value: "", Path: "/", Expires: time.Unix(1, 0), MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	clearCookie(w, accessCookieName, true)
+	clearCookie(w, insecureAccessCookieName, false)
 }
 
 func (h *Handler) Start(w http.ResponseWriter, r *http.Request, input StartInput) (string, error) {
@@ -117,7 +124,12 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request, input StartInput
 	if err != nil {
 		return "", err
 	}
-	http.SetCookie(w, &http.Cookie{Name: stateCookieName, Value: value, Path: "/", Expires: h.now().Add(stateLifetime), MaxAge: int(stateLifetime.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	secure := strings.HasPrefix(redirect, "https://")
+	name := insecureStateCookieName
+	if secure {
+		name = stateCookieName
+	}
+	setCookie(w, name, value, h.now().Add(stateLifetime), int(stateLifetime.Seconds()), secure)
 	challengeHash := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(challengeHash[:])
 	authorization, _ := url.Parse(h.cfg.AuthorizationURL)
@@ -134,18 +146,25 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request, input StartInput
 }
 
 func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
-	cookie, err := r.Cookie(stateCookieName)
+	if providerError := r.URL.Query().Get("error"); providerError != "" {
+		message := "Cloudflare authorization was not completed."
+		if providerError == "invalid_scope" {
+			message = "Cloudflare rejected a requested permission. Allow these scopes on your OAuth client: " + requiredScopes + "."
+		}
+		http.Error(w, message, http.StatusBadRequest)
+		return
+	}
+	state, cookieName, err := h.readStateCookie(r)
 	if err != nil {
 		http.Error(w, "authorization state is missing", http.StatusBadRequest)
 		return
 	}
-	state, err := h.decodeTransient(cookie.Value)
-	if err != nil || state.State == "" || state.Verifier == "" || state.ClientID == "" || !validOrigin(state.OpenerOrigin) || !validRedirect(state.RedirectURI) || state.ExpiresAt < h.now().Unix() || r.URL.Query().Get("state") == "" || r.URL.Query().Get("state") != state.State {
+	if state.State == "" || state.Verifier == "" || state.ClientID == "" || !validOrigin(state.OpenerOrigin) || !validRedirect(state.RedirectURI) || state.ExpiresAt < h.now().Unix() || r.URL.Query().Get("state") == "" || r.URL.Query().Get("state") != state.State {
 		http.Error(w, "authorization state did not match", http.StatusBadRequest)
 		return
 	}
 	code := r.URL.Query().Get("code")
-	if code == "" || r.URL.Query().Get("error") != "" {
+	if code == "" {
 		http.Error(w, "Cloudflare authorization was not completed", http.StatusBadRequest)
 		return
 	}
@@ -155,14 +174,59 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.now()
-	http.SetCookie(w, &http.Cookie{Name: stateCookieName, Value: "", Path: "/", Expires: time.Unix(1, 0), MaxAge: -1, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
-	http.SetCookie(w, &http.Cookie{Name: accessCookieName, Value: access, Path: "/", Expires: now.Add(expires), MaxAge: int(expires.Seconds()), Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	secure := strings.HasPrefix(state.RedirectURI, "https://")
+	clearCookie(w, cookieName, secure)
+	accessName := insecureAccessCookieName
+	if secure {
+		accessName = accessCookieName
+	}
+	setCookie(w, accessName, access, now.Add(expires), int(expires.Seconds()), secure)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, `<!doctype html><meta charset="utf-8"><title>Cloudflare connected</title><script>if(window.opener){window.opener.postMessage({type:"cloudflare-oauth-complete"},`+quote(state.OpenerOrigin)+`)}window.close()</script><p>Cloudflare authorization finished. You can close this window.</p>`)
+}
+
+func (h *Handler) readStateCookie(r *http.Request) (transientState, string, error) {
+	for _, name := range []string{stateCookieName, insecureStateCookieName} {
+		cookie, err := r.Cookie(name)
+		if err != nil || cookie == nil || cookie.Value == "" {
+			continue
+		}
+		state, err := h.decodeTransient(cookie.Value)
+		if err != nil || !validRedirect(state.RedirectURI) {
+			continue
+		}
+		secure := strings.HasPrefix(state.RedirectURI, "https://")
+		if name == stateCookieName && secure || name == insecureStateCookieName && !secure {
+			return state, name, nil
+		}
+	}
+	return transientState{}, "", errors.New("authorization state cookie is missing or invalid")
+}
+
+func requestUsesHTTPS(r *http.Request) bool {
+	if forwardedProto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
+		return strings.EqualFold(forwardedProto, "https")
+	}
+	if r.TLS != nil {
+		return true
+	}
+	if origin := r.Header.Get("Origin"); validOrigin(origin) {
+		u, _ := url.Parse(origin)
+		return u.Scheme == "https"
+	}
+	return true
+}
+
+func setCookie(w http.ResponseWriter, name, value string, expires time.Time, maxAge int, secure bool) {
+	http.SetCookie(w, &http.Cookie{Name: name, Value: value, Path: "/", Expires: expires, MaxAge: maxAge, Secure: secure, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+}
+
+func clearCookie(w http.ResponseWriter, name string, secure bool) {
+	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", Expires: time.Unix(1, 0), MaxAge: -1, Secure: secure, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 }
 
 func (h *Handler) exchange(r *http.Request, code string, state transientState) (string, time.Duration, error) {

@@ -109,6 +109,10 @@ button:disabled { cursor: not-allowed; opacity: .54; }
 .oauth-setup dt { color: #40564d; font-weight: 700; }
 .oauth-setup dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .oauth-setup code { color: #23443a; font-size: 11px; }
+.oauth-scope-list { display: grid; gap: 4px; margin: 0; padding-left: 18px; }
+.oauth-scope-list li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; }
+.oauth-scope-list li::marker { color: #82978d; }
+.oauth-scope-list code { overflow-wrap: anywhere; }
 .oauth-setup .oauth-setup-note { margin-top: 10px; padding-top: 9px; border-top: 1px solid #e4ece8; color: #718078; font-size: 11px; }
 .oauth-settings-form { display: grid; gap: 8px; }
 .oauth-settings-form label { color: #667770; font-size: 11px; font-weight: 700; }
