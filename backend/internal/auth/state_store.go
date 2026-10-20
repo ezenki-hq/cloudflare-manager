@@ -22,6 +22,8 @@ const pendingStateTable = "oauth_pending_state"
 
 const pendingStateKeyDomain = "cloudflare-manager/oauth-pending-state/v1"
 
+var ErrStateStoreUnavailable = errors.New("pending OAuth state storage is unavailable")
+
 type PendingState struct {
 	Verifier     string `json:"verifier"`
 	OpenerOrigin string `json:"opener_origin"`
@@ -88,7 +90,7 @@ func (s *PendingStore) Put(ctx context.Context, rawState string, value PendingSt
 	query := "CREATE type::thing('oauth_pending_state', $id) SET expires_at = $expires_at, payload = $payload RETURN AFTER"
 	results, err := s.db.DatabaseQuery(ctx, query, map[string]any{"id": id, "expires_at": value.ExpiresAt, "payload": encoded})
 	if err != nil {
-		return err
+		return errors.Join(ErrStateStoreUnavailable, err)
 	}
 	if len(results) != 1 {
 		return errors.New("Commander did not confirm pending OAuth state creation")
@@ -104,7 +106,7 @@ func (s *PendingStore) Take(ctx context.Context, rawState string, now time.Time)
 	query := "DELETE type::thing('oauth_pending_state', $id) WHERE expires_at > $now RETURN BEFORE"
 	results, err := s.db.DatabaseQuery(ctx, query, map[string]any{"id": id, "now": now.Unix()})
 	if err != nil {
-		return PendingState{}, err
+		return PendingState{}, errors.Join(ErrStateStoreUnavailable, err)
 	}
 	if len(results) != 1 {
 		return PendingState{}, errors.New("pending OAuth state is invalid, expired, or already used")
@@ -133,7 +135,7 @@ func (s *PendingStore) Prune(ctx context.Context, now time.Time) (int, error) {
 	query := "DELETE oauth_pending_state WHERE expires_at <= $now RETURN BEFORE"
 	results, err := s.db.DatabaseQuery(ctx, query, map[string]any{"now": now.Unix()})
 	if err != nil {
-		return 0, err
+		return 0, errors.Join(ErrStateStoreUnavailable, err)
 	}
 	if len(results) != 1 {
 		return 0, errors.New("Commander did not return pending OAuth state cleanup results")

@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -78,10 +76,11 @@ func serve() error {
 	if err != nil {
 		return fmt.Errorf("verify Commander manager: %w", err)
 	}
-	stateMAC := hmac.New(sha256.New, jwtSecret)
-	_, _ = stateMAC.Write([]byte("cloudflare-manager/oauth-state/v1"))
-	stateKey := stateMAC.Sum(nil)
-	oauth, err := auth.NewHandler(auth.Config{AuthorizationURL: defaultAuthorizationURL, TokenURL: defaultTokenURL, StateKey: stateKey}, &http.Client{Timeout: 12 * time.Second}, time.Now)
+	stateStore, err := auth.NewPendingStore(commanderClient, managerID, managerPassword)
+	if err != nil {
+		return fmt.Errorf("configure OAuth state store: %w", err)
+	}
+	oauth, err := auth.NewHandler(auth.Config{AuthorizationURL: defaultAuthorizationURL, TokenURL: defaultTokenURL, StateStore: stateStore, ManagerID: managerID}, &http.Client{Timeout: 12 * time.Second}, time.Now)
 	if err != nil {
 		return fmt.Errorf("configure OAuth: %w", err)
 	}

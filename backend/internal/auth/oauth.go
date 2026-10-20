@@ -1,10 +1,10 @@
 package auth
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,9 +17,7 @@ import (
 )
 
 const (
-	stateCookieName          = "__Host-cf-oauth"
 	accessCookieName         = "__Host-cf-access"
-	insecureStateCookieName  = "cf-oauth"
 	insecureAccessCookieName = "cf-access"
 	stateLifetime            = 10 * time.Minute
 	maxTokenResponse         = 1 << 20
@@ -28,7 +26,8 @@ const (
 
 type Config struct {
 	AuthorizationURL, TokenURL string
-	StateKey                   []byte
+	StateStore                 StateStore
+	ManagerID                  string
 }
 type StartInput struct {
 	ClientID     string `json:"client_id"`
@@ -40,23 +39,12 @@ type Handler struct {
 	client *http.Client
 	now    func() time.Time
 }
-type transientState struct {
-	State        string `json:"s"`
-	Verifier     string `json:"v"`
-	OpenerOrigin string `json:"o"`
-	ClientID     string `json:"c"`
-	RedirectURI  string `json:"r"`
-	ExpiresAt    int64  `json:"e"`
-}
 type tokenResponse struct {
 	AccessToken string `json:"access_token"`
 	ExpiresIn   int64  `json:"expires_in"`
 }
 
 func NewHandler(cfg Config, client *http.Client, now func() time.Time) (*Handler, error) {
-	if len(cfg.StateKey) < 32 {
-		return nil, errors.New("OAuth state key must contain at least 32 bytes")
-	}
 	if err := validateEndpoint(cfg.AuthorizationURL); err != nil {
 		return nil, fmt.Errorf("invalid authorization URL: %w", err)
 	}
@@ -105,6 +93,9 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request, input StartInput
 	if err := validateOrigin(browserOrigin); err != nil {
 		return "", errors.New("invalid browser origin")
 	}
+	if input.OpenerOrigin != browserOrigin {
+		return "", errors.New("opener origin must match browser origin")
+	}
 	api, _ := url.Parse(input.APIOrigin)
 	if input.APIOrigin != browserOrigin && !strings.EqualFold(api.Host, r.Host) {
 		slog.Warn("OAuth start rejected because API origin matches neither browser origin nor request host", "api_origin", input.APIOrigin, "browser_origin", browserOrigin, "request_host", r.Host, "forwarded_host", r.Header.Get("X-Forwarded-Host"))
@@ -119,17 +110,14 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request, input StartInput
 		return "", err
 	}
 	redirect := strings.TrimRight(input.APIOrigin, "/") + "/auth/callback"
-	transient := transientState{State: state, Verifier: verifier, OpenerOrigin: input.OpenerOrigin, ClientID: input.ClientID, RedirectURI: redirect, ExpiresAt: h.now().Add(stateLifetime).Unix()}
-	value, err := h.encodeTransient(transient)
-	if err != nil {
-		return "", err
+	if h.cfg.StateStore == nil || h.cfg.ManagerID == "" {
+		return "", errors.New("pending OAuth state storage is unavailable")
 	}
-	secure := strings.HasPrefix(redirect, "https://")
-	name := insecureStateCookieName
-	if secure {
-		name = stateCookieName
+	transient := PendingState{Verifier: verifier, OpenerOrigin: input.OpenerOrigin, ClientID: input.ClientID, RedirectURI: redirect, ManagerID: h.cfg.ManagerID, ExpiresAt: h.now().Add(stateLifetime).Unix()}
+	if err := h.cfg.StateStore.Put(r.Context(), state, transient); err != nil {
+		slog.Warn("OAuth pending state could not be stored", "event", "oauth_state_write_failed", "flow_id", flowIdentifier(state), "reason", "state_store_unavailable", "request_host", r.Host)
+		return "", ErrStateStoreUnavailable
 	}
-	setCookie(w, name, value, h.now().Add(stateLifetime), int(stateLifetime.Seconds()), secure)
 	challengeHash := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(challengeHash[:])
 	authorization, _ := url.Parse(h.cfg.AuthorizationURL)
@@ -142,40 +130,72 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request, input StartInput
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 	authorization.RawQuery = q.Encode()
+	slog.Info("OAuth authorization started", "event", "oauth_start", "flow_id", flowIdentifier(state), "request_host", r.Host, "browser_origin", browserOrigin)
 	return authorization.String(), nil
 }
 
 func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
-	if providerError := r.URL.Query().Get("error"); providerError != "" {
-		message := "Cloudflare authorization was not completed."
-		if providerError == "invalid_scope" {
-			message = "Cloudflare rejected a requested permission. Allow these scopes on your OAuth client: " + requiredScopes + "."
+	query := r.URL.Query()
+	stateValues := query["state"]
+	stateToken := ""
+	if len(stateValues) == 1 {
+		stateToken = stateValues[0]
+	}
+	flowID := flowIdentifier(stateToken)
+	if stateToken == "" {
+		reason := "state_missing"
+		if len(stateValues) > 1 {
+			reason = "state_malformed"
 		}
+		h.logCallbackFailure(r, flowID, reason)
+		http.Error(w, "Authorization state is missing or expired. Return to Cloudflare Manager and try signing in again.", http.StatusBadRequest)
+		return
+	}
+	if h.cfg.StateStore == nil {
+		h.logCallbackFailure(r, flowID, "state_store_unavailable")
+		http.Error(w, "Cloudflare Manager could not verify authorization state. Try again shortly.", http.StatusServiceUnavailable)
+		return
+	}
+	state, err := h.cfg.StateStore.Take(r.Context(), stateToken, h.now())
+	if err != nil {
+		if errors.Is(err, ErrStateStoreUnavailable) {
+			h.logCallbackFailure(r, flowID, "state_store_unavailable")
+			http.Error(w, "Cloudflare Manager could not verify authorization state. Try again shortly.", http.StatusServiceUnavailable)
+		} else {
+			h.logCallbackFailure(r, flowID, "state_invalid_expired_or_used")
+			http.Error(w, "Authorization state is missing or expired. Return to Cloudflare Manager and try signing in again.", http.StatusBadRequest)
+		}
+		return
+	}
+	if state.ManagerID != h.cfg.ManagerID || state.Verifier == "" || state.ClientID == "" || !validOrigin(state.OpenerOrigin) || !validRedirect(state.RedirectURI) || state.ExpiresAt <= h.now().Unix() || state.RedirectURI != callbackRedirectURI(r) {
+		h.logCallbackFailure(r, flowID, "state_context_mismatch")
+		http.Error(w, "Authorization state did not match this manager. Return to Cloudflare Manager and try again.", http.StatusBadRequest)
+		return
+	}
+	if providerError := query.Get("error"); providerError != "" {
+		message, reason := "Cloudflare authorization was not completed.", "provider_error"
+		if providerError == "invalid_scope" {
+			message, reason = "Cloudflare rejected a requested permission. Allow these scopes on your OAuth client: "+requiredScopes+".", "invalid_scope"
+		}
+		h.logCallbackFailure(r, flowID, reason)
 		http.Error(w, message, http.StatusBadRequest)
 		return
 	}
-	state, cookieName, err := h.readStateCookie(r)
-	if err != nil {
-		http.Error(w, "authorization state is missing", http.StatusBadRequest)
-		return
-	}
-	if state.State == "" || state.Verifier == "" || state.ClientID == "" || !validOrigin(state.OpenerOrigin) || !validRedirect(state.RedirectURI) || state.ExpiresAt < h.now().Unix() || r.URL.Query().Get("state") == "" || r.URL.Query().Get("state") != state.State {
-		http.Error(w, "authorization state did not match", http.StatusBadRequest)
-		return
-	}
-	code := r.URL.Query().Get("code")
-	if code == "" {
+	codeValues := query["code"]
+	if len(codeValues) != 1 || codeValues[0] == "" {
+		h.logCallbackFailure(r, flowID, "authorization_code_missing")
 		http.Error(w, "Cloudflare authorization was not completed", http.StatusBadRequest)
 		return
 	}
+	code := codeValues[0]
 	access, expires, err := h.exchange(r, code, state)
 	if err != nil {
+		h.logCallbackFailure(r, flowID, "token_exchange_failed")
 		http.Error(w, "Cloudflare token exchange failed", http.StatusBadGateway)
 		return
 	}
 	now := h.now()
 	secure := strings.HasPrefix(state.RedirectURI, "https://")
-	clearCookie(w, cookieName, secure)
 	accessName := insecureAccessCookieName
 	if secure {
 		accessName = accessCookieName
@@ -187,24 +207,27 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, `<!doctype html><meta charset="utf-8"><title>Cloudflare connected</title><script>if(window.opener){window.opener.postMessage({type:"cloudflare-oauth-complete"},`+quote(state.OpenerOrigin)+`)}window.close()</script><p>Cloudflare authorization finished. You can close this window.</p>`)
+	slog.Info("OAuth callback completed", "event", "oauth_callback", "flow_id", flowID, "reason", "success", "request_host", r.Host)
 }
 
-func (h *Handler) readStateCookie(r *http.Request) (transientState, string, error) {
-	for _, name := range []string{stateCookieName, insecureStateCookieName} {
-		cookie, err := r.Cookie(name)
-		if err != nil || cookie == nil || cookie.Value == "" {
-			continue
-		}
-		state, err := h.decodeTransient(cookie.Value)
-		if err != nil || !validRedirect(state.RedirectURI) {
-			continue
-		}
-		secure := strings.HasPrefix(state.RedirectURI, "https://")
-		if name == stateCookieName && secure || name == insecureStateCookieName && !secure {
-			return state, name, nil
-		}
+func (h *Handler) logCallbackFailure(r *http.Request, flowID, reason string) {
+	slog.Warn("OAuth callback rejected or failed", "event", "oauth_callback", "flow_id", flowID, "reason", reason, "request_host", r.Host)
+}
+
+func callbackRedirectURI(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+		scheme = "https"
 	}
-	return transientState{}, "", errors.New("authorization state cookie is missing or invalid")
+	return scheme + "://" + r.Host + "/auth/callback"
+}
+
+func flowIdentifier(rawState string) string {
+	if rawState == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(rawState))
+	return hex.EncodeToString(digest[:6])
 }
 
 func requestUsesHTTPS(r *http.Request) bool {
@@ -229,7 +252,7 @@ func clearCookie(w http.ResponseWriter, name string, secure bool) {
 	http.SetCookie(w, &http.Cookie{Name: name, Value: "", Path: "/", Expires: time.Unix(1, 0), MaxAge: -1, Secure: secure, HttpOnly: true, SameSite: http.SameSiteLaxMode})
 }
 
-func (h *Handler) exchange(r *http.Request, code string, state transientState) (string, time.Duration, error) {
+func (h *Handler) exchange(r *http.Request, code string, state PendingState) (string, time.Duration, error) {
 	form := url.Values{"grant_type": {"authorization_code"}, "client_id": {state.ClientID}, "code": {code}, "redirect_uri": {state.RedirectURI}, "code_verifier": {state.Verifier}}
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, h.cfg.TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
@@ -252,38 +275,6 @@ func (h *Handler) exchange(r *http.Request, code string, state transientState) (
 		return "", 0, errors.New("token endpoint returned invalid access token lifetime")
 	}
 	return token.AccessToken, time.Duration(token.ExpiresIn) * time.Second, nil
-}
-func (h *Handler) encodeTransient(value transientState) (string, error) {
-	b, e := json.Marshal(value)
-	if e != nil {
-		return "", e
-	}
-	body := base64.RawURLEncoding.EncodeToString(b)
-	mac := hmac.New(sha256.New, h.cfg.StateKey)
-	_, _ = mac.Write([]byte(body))
-	return body + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil)), nil
-}
-func (h *Handler) decodeTransient(value string) (transientState, error) {
-	var s transientState
-	parts := strings.Split(value, ".")
-	if len(parts) != 2 {
-		return s, errors.New("invalid state cookie")
-	}
-	sig, e := base64.RawURLEncoding.DecodeString(parts[1])
-	if e != nil {
-		return s, e
-	}
-	mac := hmac.New(sha256.New, h.cfg.StateKey)
-	_, _ = mac.Write([]byte(parts[0]))
-	if !hmac.Equal(sig, mac.Sum(nil)) {
-		return s, errors.New("invalid state cookie")
-	}
-	raw, e := base64.RawURLEncoding.DecodeString(parts[0])
-	if e != nil {
-		return s, e
-	}
-	e = json.Unmarshal(raw, &s)
-	return s, e
 }
 func (h *Handler) session(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.Token(r); !ok {

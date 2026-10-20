@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/auth"
@@ -61,6 +62,9 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 		}
 		u, err := s.oauth.Start(w, r, auth.StartInput{ClientID: d.ClientID, OpenerOrigin: d.OpenerOrigin, APIOrigin: d.APIOrigin})
 		if err != nil {
+			if errors.Is(err, auth.ErrStateStoreUnavailable) {
+				return fail(http.StatusServiceUnavailable, "commander_unavailable", "Commander database is unavailable; try signing in again shortly")
+			}
 			return fail(http.StatusBadRequest, "invalid_oauth_request", err.Error())
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"authorization_url": u})
