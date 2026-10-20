@@ -28,7 +28,7 @@ describe("initial installer", () => {
     expect(() => buildInstallRun({ ...input, managerId:"manager", commander:{...commander,connectionId:""} })).toThrow(/connection ID/i);
     expect(() => buildInstallRun({ ...input, stateTTLImage:"", managerId:"manager", commander })).toThrow(/state ttl image/i);
     expect(() => buildInstallRun({ ...input, stateTTLImage:"ezenki/ttl", managerId:"manager", commander })).toThrow(/tag or SHA-256 digest/i);
-    for (const stateTTLImage of ["ezenki/ttl::bad", "ezenki/ttl:bad:", "Ezenki/ttl:latest", "ezenki//ttl:latest"]) {
+    for (const stateTTLImage of ["ezenki/ttl::bad", "ezenki/ttl:bad:", "Ezenki/ttl:latest", "ezenki//ttl:latest", "registry.example:99999/ezenki/ttl:v2"]) {
       expect(() => buildInstallRun({ ...input, stateTTLImage, managerId:"manager", commander })).toThrow(/valid tagged image reference/i);
     }
     expect(() => buildInstallRun({ ...input, stateTTLImage:"ezenki/ttl@sha256:"+"a".repeat(64), managerId:"manager", commander })).not.toThrow();

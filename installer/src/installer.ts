@@ -113,7 +113,8 @@ function validImageName(name: string): boolean {
   return name.split("/").every((part, index) => {
     if (index === 0 && part.includes(":")) {
       const [host, port, ...rest] = part.split(":");
-      return rest.length === 0 && !!host && /^[0-9]{1,5}$/.test(port) && /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/.test(host);
+      const portNumber = Number(port);
+      return rest.length === 0 && !!host && /^[0-9]{1,5}$/.test(port) && portNumber >= 1 && portNumber <= 65535 && /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/.test(host);
     }
     return /^[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/.test(part);
   });
