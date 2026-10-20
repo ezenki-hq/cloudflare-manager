@@ -113,6 +113,22 @@ type connectionPage struct {
 	Total  int          `json:"total"`
 }
 
+type QueryResult struct {
+	Statement int             `json:"statement"`
+	Status    string          `json:"status"`
+	Result    json.RawMessage `json:"result"`
+}
+
+type databaseQueryResult struct {
+	Statement *int            `json:"statement"`
+	Status    string          `json:"status"`
+	Result    json.RawMessage `json:"result"`
+}
+
+type databaseQueryResponse struct {
+	Results []databaseQueryResult `json:"results"`
+}
+
 // NewClient creates an authenticated client for the manager API base URL,
 // including its /api/v1 path.
 func NewClient(baseURL, managerID, password string, httpClient *http.Client) (*Client, error) {
@@ -310,15 +326,29 @@ func (c *Client) DeleteConnectionLabel(ctx context.Context, id, key string) erro
 	return c.request(ctx, http.MethodDelete, "/connections/"+escapePathComponent(id)+"/labels/"+escapePathComponent(key), nil, nil)
 }
 
-func (c *Client) DatabaseQuery(ctx context.Context, query string, bindings map[string]any) error {
+func (c *Client) DatabaseQuery(ctx context.Context, query string, bindings map[string]any) ([]QueryResult, error) {
 	if strings.TrimSpace(query) == "" {
-		return errors.New("database query is required")
+		return nil, errors.New("database query is required")
 	}
 	body := map[string]any{"query": query}
 	if bindings != nil {
 		body["bindings"] = bindings
 	}
-	return c.request(ctx, http.MethodPost, "/database/query", body, nil)
+	var response databaseQueryResponse
+	if err := c.request(ctx, http.MethodPost, "/database/query", body, &response); err != nil {
+		return nil, err
+	}
+	if len(response.Results) == 0 {
+		return nil, errors.New("Commander database query returned no statement results")
+	}
+	results := make([]QueryResult, len(response.Results))
+	for i, result := range response.Results {
+		if result.Statement == nil || *result.Statement != i || result.Status != "OK" || len(result.Result) == 0 {
+			return nil, errors.New("Commander database query returned an invalid or failed statement result")
+		}
+		results[i] = QueryResult{Statement: *result.Statement, Status: result.Status, Result: result.Result}
+	}
+	return results, nil
 }
 
 func (c *Client) request(ctx context.Context, method, suffix string, body, output any) error {

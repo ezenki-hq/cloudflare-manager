@@ -184,11 +184,15 @@ func TestDatabaseQuerySendsBoundValuesWithoutInlining(t *testing.T) {
 		if body["query"] != "RETURN $value" || body["bindings"].(map[string]any)["value"] != "bound" {
 			t.Errorf("query request = %#v", body)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"results": []any{map[string]any{"statement": 0, "result": "bound"}}})
+		writeJSON(w, http.StatusOK, map[string]any{"results": []any{map[string]any{"statement": 0, "status": "OK", "result": "bound"}}})
 	})
 	defer server.Close()
-	if err := newTestClient(t, server.URL).DatabaseQuery(context.Background(), "RETURN $value", map[string]any{"value": "bound"}); err != nil {
+	results, err := newTestClient(t, server.URL).DatabaseQuery(context.Background(), "RETURN $value", map[string]any{"value": "bound"})
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(results) != 1 || results[0].Statement != 0 || results[0].Status != "OK" || string(results[0].Result) != `"bound"` {
+		t.Fatalf("results = %#v", results)
 	}
 }
 
@@ -201,11 +205,45 @@ func TestDatabaseQueryOmitsBindingsWhenAbsent(t *testing.T) {
 		if _, exists := body["bindings"]; exists {
 			t.Errorf("query with no bindings sent bindings field: %#v", body)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"results": []any{map[string]any{"statement": 0}}})
+		writeJSON(w, http.StatusOK, map[string]any{"results": []any{map[string]any{"statement": 0, "status": "OK", "result": nil}}})
 	})
 	defer server.Close()
-	if err := newTestClient(t, server.URL).DatabaseQuery(context.Background(), "RETURN 1", nil); err != nil {
+	if _, err := newTestClient(t, server.URL).DatabaseQuery(context.Background(), "RETURN 1", nil); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDatabaseQueryRejectsFailedOrMalformedResults(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty results":        `{"results":[]}`,
+		"failed status":        `{"results":[{"statement":0,"status":"ERR","result":"query failed"}]}`,
+		"missing status":       `{"results":[{"statement":0,"result":[]}]}`,
+		"missing envelope":     `{"result":[]}`,
+		"out of order indexes": `{"results":[{"statement":1,"status":"OK","result":[]}]}`,
+		"malformed JSON":       `{"results":[`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := jsonServer(t, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) })
+			defer server.Close()
+			results, err := newTestClient(t, server.URL).DatabaseQuery(context.Background(), "RETURN 1", nil)
+			if err == nil || results != nil || strings.Contains(err.Error(), "query failed") {
+				t.Fatalf("results=%#v error=%v; want safe failure", results, err)
+			}
+		})
+	}
+}
+
+func TestDatabaseQueryRejectsAnyFailedStatement(t *testing.T) {
+	server := jsonServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"results": []any{
+			map[string]any{"statement": 0, "status": "OK", "result": []any{}},
+			map[string]any{"statement": 1, "status": "ERR", "result": "private details"},
+		}})
+	})
+	defer server.Close()
+	results, err := newTestClient(t, server.URL).DatabaseQuery(context.Background(), "RETURN 1; RETURN 2", nil)
+	if err == nil || results != nil || strings.Contains(err.Error(), "private details") {
+		t.Fatalf("results=%#v error=%v; want safe failure", results, err)
 	}
 }
 
