@@ -236,8 +236,14 @@ describe("Cloudflare Manager interface", () => {
     expect(guide.textContent).toContain("Grant typeAuthorization Code");
     expect(guide.textContent).toContain("Token authentication methodNone (PKCE)");
     expect(guide.textContent).toContain("Redirect URLs");
-    expect(guide.textContent).toContain("Account Read, Zone Read, Workers R2 Storage Read, Workers R2 Storage Write, Account API Tokens Read, and Account API Tokens Write");
-    expect(guide.textContent).toContain("account.read zone.read workers-r2.read workers-r2.write account-api-tokens.read account-api-tokens.write");
+    const scopes = guide.querySelectorAll(".oauth-scope-list li");
+    expect(scopes).toHaveLength(5);
+    expect(guide.textContent).toContain("Account Settings Read");
+    expect(guide.textContent).toContain("account-settings.read");
+    expect(guide.textContent).toContain("Account API Tokens Write");
+    expect(guide.textContent).toContain("account-api-tokens.write");
+    expect(guide.textContent).not.toContain("account.read");
+    expect(guide.textContent).not.toContain("account-api-tokens.read");
     expect(guide.textContent).toContain("Copy the client ID Cloudflare gives you into the field below");
     expect(guide.textContent).toContain(`set Client URL to ${window.location.origin}`);
   });

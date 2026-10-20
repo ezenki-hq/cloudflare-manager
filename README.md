@@ -2,7 +2,7 @@
 
 A Deploy Commander manager for Cloudflare R2. This repository contains two independent React projects: `installer/` approves the Commander connection, starts installation, and shows the current action state; detailed runs live in Deploy Commander's runs section. `frontend/` is the management UI bundled into the Go service image. The Go service owns Cloudflare OAuth, Cloudflare API calls, and R2 resource and connection workflows.
 
-Cloudflare user authorization lives in a short-lived `Secure`, `HttpOnly` cookie. It is not stored in Deploy Commander, refreshed, or persisted by this service. Application S3 credentials are separate account-owned Cloudflare tokens scoped to one bucket; their access key and secret are stored in the requesting application's Deploy Commander connection secrets.
+Cloudflare user authorization lives in a short-lived `HttpOnly` cookie. HTTPS deployments use host-only `Secure` cookies; local HTTP development uses separate host-only cookies without `Secure`. The token is not stored in Deploy Commander, refreshed, or persisted by this service. Application S3 credentials are separate account-owned Cloudflare tokens scoped to one bucket; their access key and secret are stored in the requesting application's Deploy Commander connection secrets.
 
 ## Requirements
 
@@ -20,9 +20,14 @@ Create an OAuth client in Cloudflare with these settings:
 - Token authentication: `none`
 - Client type: public client using Authorization Code with PKCE (`S256`)
 - Redirect URI: `https://cloudflare-manager.example.com/auth/callback` (replace with the manager's exact public origin)
-- Required scopes: `Account Read`, `Zone Read`, `Workers R2 Storage Read`, `Workers R2 Storage Write`, `Account API Tokens Read`, and `Account API Tokens Write` (`account.read zone.read workers-r2.read workers-r2.write account-api-tokens.read account-api-tokens.write`)
+- Required scopes:
+  - Account Settings Read (`account-settings.read`)
+  - Zone Read (`zone.read`)
+  - Workers R2 Storage Read (`workers-r2.read`)
+  - Workers R2 Storage Write (`workers-r2.write`)
+  - Account API Tokens Write (`account-api-tokens.write`)
 
-Cloudflare OAuth scope names match API token permission names. The backend requests the scope IDs listed above, so configure all six on the OAuth client. On the consent screen, select the account before reviewing and granting the requested permissions. Cloudflare's [`/oauth/scopes` API](https://developers.cloudflare.com/api/resources/iam/subresources/oauth_scopes/methods/list/) lists current scope IDs. See Cloudflare's [OAuth client setup](https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/) and [R2 token permissions](https://developers.cloudflare.com/r2/api/tokens/) for current scope details. The app does not request `offline_access` and never uses a refresh token. For use by Cloudflare users outside the OAuth client's owning account, make the client public after completing Cloudflare's client URL ownership verification. Keep the client ID public; do not create a client secret for this PKCE client.
+Configure the listed scopes on the OAuth client. On the consent screen, select the account before reviewing and granting the requested permissions. Cloudflare's [`/oauth/scopes` API](https://developers.cloudflare.com/api/resources/iam/subresources/oauth_scopes/methods/list/) lists current scope IDs. See Cloudflare's [OAuth client setup](https://developers.cloudflare.com/fundamentals/oauth/create-an-oauth-client/) and [R2 token permissions](https://developers.cloudflare.com/r2/api/tokens/) for current scope details. The app does not request `offline_access` and never uses a refresh token. For use by Cloudflare users outside the OAuth client's owning account, make the client public after completing Cloudflare's client URL ownership verification. Keep the client ID public; do not create a client secret for this PKCE client.
 
 ## Build and publish the installer
 
@@ -66,7 +71,7 @@ The installer defaults to `latest` tags for both images. It accepts tagged image
 
 Open the published installer inside Deploy Commander, create and approve the Commander connection if needed, then click Install. The installer shows setup guidance and the current action state; detailed runs are available in Deploy Commander's separate runs section. The runner configures the service with its approved Commander connection, waits for the `/healthz` health check, and sets the redirect to the healthy service. After a successful install, the installer interface reloads into the manager automatically.
 
-Use an HTTPS custom hostname for the manager. The OAuth callback is derived from the request host, and the protected state cookie carries that redirect through callback. The host-only, `SameSite=Lax` access cookie must be available to the manager frontend. A raw internal HTTP alias works for runner-to-service traffic and is not the public OAuth origin.
+Use an HTTPS custom hostname for production. The OAuth callback is derived from the current browser origin, and the protected state cookie carries that redirect through callback. Local HTTP origins use non-Secure, host-only cookies for development; keep production on HTTPS. The host-only, `SameSite=Lax` access cookie must be available to the manager frontend. A raw internal HTTP alias works for runner-to-service traffic and is not the public OAuth origin.
 
 After installation, the manager redirects to its bundled frontend. Sign in with Cloudflare, select an account and R2 jurisdiction, then manage buckets and custom CDN domains. Track a bucket to create its Deploy Commander resource. Create an application connection to provision one bucket-scoped S3 credential pair. Secrets are stored only through Deploy Commander secret RPC and are never returned in manager metadata. Revoking a connection revokes its Cloudflare token and deletes its stored secrets.
 
@@ -104,7 +109,7 @@ Override the installer image defaults with `VITE_BACKEND_IMAGE` or `VITE_RUNNER_
 Before live use, verify in Deploy Commander staging with disposable Cloudflare resources:
 
 1. Install with the latest manager and supported runner image tags; confirm the run waits for health before redirecting.
-2. Complete OAuth in the popup and verify the manager session. Confirm cookies are host-only, Secure, HttpOnly, and expire with the access token.
+2. Complete OAuth in the popup and verify the manager session. Confirm cookies are host-only and HttpOnly, HTTPS cookies are Secure, and both expire with the access token.
 3. List accounts and buckets; create and delete an empty test bucket; attach and detach a test custom domain.
 4. Provision a read-only and read/write application connection; verify the token policy names exactly one bucket; then revoke and confirm the token and both connection secrets are removed.
 5. Load the manager frontend, make the Go API unavailable, directly load `/teardown`, and use **Tear down**. Verify the styled status appears, Commander starts the standard teardown run, the runner clears the redirect, and the manager page reloads into the installer.
