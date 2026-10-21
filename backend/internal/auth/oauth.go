@@ -14,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/ezenki-hq/cloudflare-manager/backend/internal/commander"
 )
 
 const (
@@ -122,8 +124,26 @@ func (h *Handler) Start(w http.ResponseWriter, r *http.Request, input StartInput
 	}
 	transient := PendingState{Verifier: verifier, OpenerOrigin: input.OpenerOrigin, ClientID: input.ClientID, RedirectURI: redirect, ManagerID: h.cfg.ManagerID, ExpiresAt: h.now().Add(stateLifetime).Unix()}
 	if err := h.cfg.StateStore.Put(r.Context(), state, transient); err != nil {
-		slog.Warn("OAuth pending state could not be stored", "event", "oauth_state_write_failed", "flow_id", flowIdentifier(state), "reason", "state_store_unavailable", "request_host", r.Host)
-		return "", ErrStateStoreUnavailable
+		reason := "commander_unavailable"
+		if errors.Is(err, ErrStateStoreRejected) {
+			reason = "commander_query_rejected"
+		} else if errors.Is(err, ErrStateStoreInvalidResponse) {
+			reason = "commander_response_invalid"
+		}
+		args := []any{"event", "oauth_state_write_failed", "flow_id", flowIdentifier(state), "reason", reason, "request_host", r.Host}
+		var queryErr *commander.DatabaseQueryError
+		if errors.As(err, &queryErr) {
+			args = append(args, "commander_query_kind", queryErr.Kind, "commander_statement", queryErr.Statement)
+		}
+		var apiErr *commander.APIError
+		if errors.As(err, &apiErr) {
+			args = append(args, "commander_http_status", apiErr.StatusCode)
+		}
+		slog.Warn("OAuth pending state could not be stored", args...)
+		if errors.Is(err, ErrStateStoreRejected) || errors.Is(err, ErrStateStoreInvalidResponse) || errors.Is(err, ErrStateStoreUnavailable) {
+			return "", err
+		}
+		return "", errors.Join(ErrStateStoreUnavailable, err)
 	}
 	challengeHash := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(challengeHash[:])
@@ -165,10 +185,17 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	}
 	state, err := h.cfg.StateStore.Take(r.Context(), stateToken, h.now())
 	if err != nil {
-		if errors.Is(err, ErrStateStoreUnavailable) {
+		switch {
+		case errors.Is(err, ErrStateStoreUnavailable):
 			h.logCallbackFailure(r, flowID, "state_store_unavailable")
 			http.Error(w, "Cloudflare Manager could not verify authorization state. Try again shortly.", http.StatusServiceUnavailable)
-		} else {
+		case errors.Is(err, ErrStateStoreRejected):
+			h.logCallbackFailure(r, flowID, "state_store_query_rejected")
+			http.Error(w, "Cloudflare Manager could not verify authorization state. Try again shortly.", http.StatusBadGateway)
+		case errors.Is(err, ErrStateStoreInvalidResponse):
+			h.logCallbackFailure(r, flowID, "state_store_response_invalid")
+			http.Error(w, "Cloudflare Manager could not verify authorization state. Try again shortly.", http.StatusBadGateway)
+		default:
 			h.logCallbackFailure(r, flowID, "state_invalid_expired_or_used")
 			http.Error(w, "Authorization state is missing or expired. Return to Cloudflare Manager and try signing in again.", http.StatusBadRequest)
 		}

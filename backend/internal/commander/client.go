@@ -119,6 +119,26 @@ type QueryResult struct {
 	Result    json.RawMessage `json:"result"`
 }
 
+const (
+	DatabaseQueryResultsMissing  DatabaseQueryErrorKind = "results_missing"
+	DatabaseQueryStatementFailed DatabaseQueryErrorKind = "statement_failed"
+	DatabaseQueryResultInvalid   DatabaseQueryErrorKind = "result_invalid"
+)
+
+type DatabaseQueryErrorKind string
+
+type DatabaseQueryError struct {
+	Kind      DatabaseQueryErrorKind
+	Statement int
+}
+
+func (e *DatabaseQueryError) Error() string {
+	if e.Statement >= 0 {
+		return fmt.Sprintf("Commander database returned an unsuccessful result (kind %s, statement %d)", e.Kind, e.Statement)
+	}
+	return fmt.Sprintf("Commander database returned an unsuccessful result (kind %s)", e.Kind)
+}
+
 type databaseQueryResult struct {
 	Statement *int            `json:"statement"`
 	Status    string          `json:"status"`
@@ -339,12 +359,15 @@ func (c *Client) DatabaseQuery(ctx context.Context, query string, bindings map[s
 		return nil, err
 	}
 	if len(response.Results) == 0 {
-		return nil, errors.New("Commander database query returned no statement results")
+		return nil, &DatabaseQueryError{Kind: DatabaseQueryResultsMissing, Statement: -1}
 	}
 	results := make([]QueryResult, len(response.Results))
 	for i, result := range response.Results {
-		if result.Statement == nil || *result.Statement != i || result.Status != "OK" || len(result.Result) == 0 {
-			return nil, errors.New("Commander database query returned an invalid or failed statement result")
+		if result.Status != "" && result.Status != "OK" {
+			return nil, &DatabaseQueryError{Kind: DatabaseQueryStatementFailed, Statement: i}
+		}
+		if result.Status != "OK" || result.Statement == nil || *result.Statement != i || len(result.Result) == 0 {
+			return nil, &DatabaseQueryError{Kind: DatabaseQueryResultInvalid, Statement: i}
 		}
 		results[i] = QueryResult{Statement: *result.Statement, Status: result.Status, Result: result.Result}
 	}

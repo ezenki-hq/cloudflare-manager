@@ -35,14 +35,14 @@ func (db *pendingDB) DatabaseQuery(_ context.Context, query string, bindings map
 	}
 	var result any
 	switch {
-	case strings.Contains(query, "CREATE type::thing('oauth_pending_state', $id)"):
+	case strings.Contains(query, "CREATE oauth_pending_state:[$id]"):
 		id := bindings["id"].(string)
 		if _, exists := db.records[id]; exists {
 			return nil, errors.New("duplicate record")
 		}
 		db.records[id] = pendingRecord{ExpiresAt: bindings["expires_at"].(int64), Payload: bindings["payload"].(string)}
 		result = []pendingRecord{db.records[id]}
-	case strings.Contains(query, "DELETE type::thing('oauth_pending_state', $id)"):
+	case strings.Contains(query, "DELETE oauth_pending_state:[$id]"):
 		id, now := bindings["id"].(string), bindings["now"].(int64)
 		if row, ok := db.records[id]; ok && row.ExpiresAt > now {
 			delete(db.records, id)
@@ -122,7 +122,7 @@ func TestPendingStorePersistsOnlyHashedAndEncryptedState(t *testing.T) {
 	if strings.Contains(row.Payload, "opaque-state-value") || strings.Contains(row.Payload, "pkce-verifier-value") || strings.Contains(db.queries[0], "opaque-state-value") {
 		t.Fatalf("raw OAuth state was persisted: row=%#v query=%q", row, db.queries[0])
 	}
-	if !strings.Contains(db.queries[0], "type::thing('oauth_pending_state', $id)") || db.args[0]["id"] != hex.EncodeToString(wantID[:]) {
+	if !strings.Contains(db.queries[0], "CREATE oauth_pending_state:[$id]") || db.args[0]["id"] != hex.EncodeToString(wantID[:]) {
 		t.Fatalf("state query or key binding = %q %#v", db.queries[0], db.args[0])
 	}
 	if err := store.Put(context.Background(), "another-state", PendingState{ExpiresAt: now.Unix()}); err == nil {
@@ -152,7 +152,7 @@ func TestPendingStoreSurvivesRestartAndConsumesOnce(t *testing.T) {
 	if _, err := restarted.Take(context.Background(), "one-time-state", now); err == nil {
 		t.Fatal("replayed state was accepted")
 	}
-	if !strings.Contains(db.queries[len(db.queries)-1], "DELETE type::thing('oauth_pending_state', $id)") || !strings.Contains(db.queries[len(db.queries)-1], "RETURN BEFORE") {
+	if !strings.Contains(db.queries[len(db.queries)-1], "DELETE oauth_pending_state:[$id]") || !strings.Contains(db.queries[len(db.queries)-1], "RETURN BEFORE") {
 		t.Fatalf("consume was not a single delete-return query: %q", db.queries[len(db.queries)-1])
 	}
 }
@@ -241,6 +241,34 @@ func TestPendingStorePropagatesDatabaseErrors(t *testing.T) {
 	}
 }
 
+func TestPendingStoreDistinguishesRejectedQueryFromUnavailableCommander(t *testing.T) {
+	db := newPendingDB()
+	db.err = &commander.DatabaseQueryError{Kind: commander.DatabaseQueryStatementFailed, Statement: 0}
+	store, err := NewPendingStore(db, "manager-a", "commander-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := PendingState{Verifier: "v", OpenerOrigin: "https://front.example", ClientID: "client", RedirectURI: "https://manager.example/auth/callback", ManagerID: "manager-a", ExpiresAt: time.Now().Add(time.Minute).Unix()}
+	err = store.Put(context.Background(), "state", state)
+	if !errors.Is(err, ErrStateStoreRejected) || errors.Is(err, ErrStateStoreUnavailable) {
+		t.Fatalf("Put() error = %v; want Commander query rejection only", err)
+	}
+}
+
+func TestPendingStoreDistinguishesInvalidDatabaseResponse(t *testing.T) {
+	db := newPendingDB()
+	db.err = &commander.DatabaseQueryError{Kind: commander.DatabaseQueryResultInvalid, Statement: 0}
+	store, err := NewPendingStore(db, "manager-a", "commander-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := PendingState{Verifier: "v", OpenerOrigin: "https://front.example", ClientID: "client", RedirectURI: "https://manager.example/auth/callback", ManagerID: "manager-a", ExpiresAt: time.Now().Add(time.Minute).Unix()}
+	err = store.Put(context.Background(), "state", state)
+	if !errors.Is(err, ErrStateStoreInvalidResponse) || errors.Is(err, ErrStateStoreRejected) || errors.Is(err, ErrStateStoreUnavailable) {
+		t.Fatalf("Put() error = %v; want invalid Commander response only", err)
+	}
+}
+
 type invalidCleanupResultDB struct{}
 
 func (invalidCleanupResultDB) DatabaseQuery(context.Context, string, map[string]any) ([]commander.QueryResult, error) {
@@ -263,6 +291,23 @@ func TestPendingStoreRejectsUnconfirmedCreateResults(t *testing.T) {
 			state := PendingState{Verifier: "v", OpenerOrigin: "https://front.example", ClientID: "client", RedirectURI: "https://manager.example/auth/callback", ManagerID: "manager-a", ExpiresAt: time.Now().Add(time.Minute).Unix()}
 			if err := store.Put(context.Background(), "state", state); err == nil {
 				t.Fatal("unconfirmed create result was accepted")
+			} else if !errors.Is(err, ErrStateStoreInvalidResponse) {
+				t.Fatalf("Put() error = %v; want invalid response classification", err)
+			}
+		})
+	}
+}
+
+func TestPendingStoreRejectsNonArrayConsumeResultsAsInvalidResponse(t *testing.T) {
+	for _, result := range []string{"null", "{}", `"unexpected"`} {
+		t.Run(result, func(t *testing.T) {
+			store, err := NewPendingStore(fixedQueryResultDB{result: json.RawMessage(result)}, "manager-a", "commander-password")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = store.Take(context.Background(), "state", time.Now())
+			if !errors.Is(err, ErrStateStoreInvalidResponse) {
+				t.Fatalf("Take() error = %v; want invalid response classification", err)
 			}
 		})
 	}

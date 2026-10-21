@@ -62,6 +62,12 @@ func (s *Server) dispatch(w http.ResponseWriter, r *http.Request, raw json.RawMe
 		}
 		u, err := s.oauth.Start(w, r, auth.StartInput{ClientID: d.ClientID, OpenerOrigin: d.OpenerOrigin, APIOrigin: d.APIOrigin})
 		if err != nil {
+			if errors.Is(err, auth.ErrStateStoreRejected) {
+				return fail(http.StatusBadGateway, "commander_query_failed", "Commander rejected the OAuth state query; check the backend logs for details")
+			}
+			if errors.Is(err, auth.ErrStateStoreInvalidResponse) {
+				return fail(http.StatusBadGateway, "commander_response_invalid", "Commander returned an invalid OAuth state response; check the backend logs for details")
+			}
 			if errors.Is(err, auth.ErrStateStoreUnavailable) {
 				return fail(http.StatusServiceUnavailable, "commander_unavailable", "Commander database is unavailable; try signing in again shortly")
 			}

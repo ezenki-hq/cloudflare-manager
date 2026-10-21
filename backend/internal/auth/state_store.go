@@ -23,6 +23,8 @@ const pendingStateTable = "oauth_pending_state"
 const pendingStateKeyDomain = "cloudflare-manager/oauth-pending-state/v1"
 
 var ErrStateStoreUnavailable = errors.New("pending OAuth state storage is unavailable")
+var ErrStateStoreRejected = errors.New("Commander rejected a pending OAuth state query")
+var ErrStateStoreInvalidResponse = errors.New("Commander returned an invalid OAuth state query response")
 
 type PendingState struct {
 	Verifier     string `json:"verifier"`
@@ -87,17 +89,17 @@ func (s *PendingStore) Put(ctx context.Context, rawState string, value PendingSt
 	}
 	ciphertext := s.cipher.Seal(nil, nonce, plaintext, s.associatedData(id))
 	encoded := base64.RawURLEncoding.EncodeToString(append(nonce, ciphertext...))
-	query := "CREATE type::thing('oauth_pending_state', $id) SET expires_at = $expires_at, payload = $payload RETURN AFTER"
+	query := "CREATE oauth_pending_state:[$id] SET expires_at = $expires_at, payload = $payload RETURN AFTER"
 	results, err := s.db.DatabaseQuery(ctx, query, map[string]any{"id": id, "expires_at": value.ExpiresAt, "payload": encoded})
 	if err != nil {
-		return errors.Join(ErrStateStoreUnavailable, err)
+		return wrapStateStoreDatabaseError(err)
 	}
 	if len(results) != 1 || results[0].Statement != 0 || results[0].Status != "OK" {
-		return errors.New("Commander did not confirm pending OAuth state creation")
+		return invalidStateStoreResponse("Commander did not confirm pending OAuth state creation")
 	}
 	var created []pendingRecord
 	if err := json.Unmarshal(results[0].Result, &created); err != nil || len(created) != 1 || created[0].ExpiresAt != value.ExpiresAt || created[0].Payload != encoded {
-		return errors.New("Commander did not confirm pending OAuth state creation")
+		return invalidStateStoreResponse("Commander did not confirm pending OAuth state creation")
 	}
 	return nil
 }
@@ -107,16 +109,22 @@ func (s *PendingStore) Take(ctx context.Context, rawState string, now time.Time)
 		return PendingState{}, errors.New("pending OAuth state is invalid or expired")
 	}
 	id := stateRecordID(rawState)
-	query := "DELETE type::thing('oauth_pending_state', $id) WHERE expires_at > $now RETURN BEFORE"
+	query := "DELETE oauth_pending_state:[$id] WHERE expires_at > $now RETURN BEFORE"
 	results, err := s.db.DatabaseQuery(ctx, query, map[string]any{"id": id, "now": now.Unix()})
 	if err != nil {
-		return PendingState{}, errors.Join(ErrStateStoreUnavailable, err)
+		return PendingState{}, wrapStateStoreDatabaseError(err)
 	}
 	if len(results) != 1 {
-		return PendingState{}, errors.New("pending OAuth state is invalid, expired, or already used")
+		return PendingState{}, invalidStateStoreResponse("Commander did not return pending OAuth state results")
+	}
+	if !strings.HasPrefix(strings.TrimSpace(string(results[0].Result)), "[") {
+		return PendingState{}, invalidStateStoreResponse("Commander returned invalid pending OAuth state results")
 	}
 	var records []pendingRecord
-	if err := json.Unmarshal(results[0].Result, &records); err != nil || len(records) != 1 || records[0].ExpiresAt <= now.Unix() {
+	if err := json.Unmarshal(results[0].Result, &records); err != nil {
+		return PendingState{}, invalidStateStoreResponse("Commander returned invalid pending OAuth state results")
+	}
+	if len(records) != 1 || records[0].ExpiresAt <= now.Unix() {
 		return PendingState{}, errors.New("pending OAuth state is invalid, expired, or already used")
 	}
 	encoded, err := base64.RawURLEncoding.DecodeString(records[0].Payload)
@@ -139,25 +147,40 @@ func (s *PendingStore) Prune(ctx context.Context, now time.Time) (int, error) {
 	query := "DELETE oauth_pending_state WHERE expires_at <= $now RETURN BEFORE"
 	results, err := s.db.DatabaseQuery(ctx, query, map[string]any{"now": now.Unix()})
 	if err != nil {
-		return 0, errors.Join(ErrStateStoreUnavailable, err)
+		return 0, wrapStateStoreDatabaseError(err)
 	}
 	if len(results) != 1 {
-		return 0, errors.New("Commander did not return pending OAuth state cleanup results")
+		return 0, invalidStateStoreResponse("Commander did not return pending OAuth state cleanup results")
 	}
 	if !strings.HasPrefix(strings.TrimSpace(string(results[0].Result)), "[") {
-		return 0, errors.New("Commander returned invalid pending OAuth state cleanup results")
+		return 0, invalidStateStoreResponse("Commander returned invalid pending OAuth state cleanup results")
 	}
 	var records []json.RawMessage
 	if err := json.Unmarshal(results[0].Result, &records); err != nil {
-		return 0, errors.New("Commander returned invalid pending OAuth state cleanup results")
+		return 0, invalidStateStoreResponse("Commander returned invalid pending OAuth state cleanup results")
 	}
 	for _, record := range records {
 		var row map[string]json.RawMessage
 		if err := json.Unmarshal(record, &row); err != nil || row == nil {
-			return 0, errors.New("Commander returned invalid pending OAuth state cleanup results")
+			return 0, invalidStateStoreResponse("Commander returned invalid pending OAuth state cleanup results")
 		}
 	}
 	return len(records), nil
+}
+
+func invalidStateStoreResponse(message string) error {
+	return errors.Join(ErrStateStoreInvalidResponse, errors.New(message))
+}
+
+func wrapStateStoreDatabaseError(err error) error {
+	var queryErr *commander.DatabaseQueryError
+	if errors.As(err, &queryErr) {
+		if queryErr.Kind == commander.DatabaseQueryStatementFailed {
+			return errors.Join(ErrStateStoreRejected, err)
+		}
+		return errors.Join(ErrStateStoreInvalidResponse, err)
+	}
+	return errors.Join(ErrStateStoreUnavailable, err)
 }
 
 func stateRecordID(rawState string) string {

@@ -152,6 +152,34 @@ func TestSignedOAuthStartReturnsServiceUnavailableWhenStateWriteFails(t *testing
 	}
 }
 
+func TestSignedOAuthStartIdentifiesRejectedStateQuery(t *testing.T) {
+	oauthHandler, err := auth.NewHandler(auth.Config{AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token", StateStore: &routeStateStore{putErr: auth.ErrStateStoreRejected}, ManagerID: testManager}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(Config{ManagerID: testManager, JWTSecret: testKey}, oauthHandler, nil, nil)
+	req := signedRequest(t, "/auth/start", testOrigin, map[string]any{"client_id": "oauth-client", "opener_origin": testOrigin, "api_origin": testOrigin})
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadGateway || !strings.Contains(resp.Body.String(), `"code":"commander_query_failed"`) || strings.Contains(resp.Body.String(), "authorization_url") {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestSignedOAuthStartIdentifiesInvalidCommanderResponse(t *testing.T) {
+	oauthHandler, err := auth.NewHandler(auth.Config{AuthorizationURL: "https://cloudflare.example/authorize", TokenURL: "https://cloudflare.example/token", StateStore: &routeStateStore{putErr: auth.ErrStateStoreInvalidResponse}, ManagerID: testManager}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(Config{ManagerID: testManager, JWTSecret: testKey}, oauthHandler, nil, nil)
+	req := signedRequest(t, "/auth/start", testOrigin, map[string]any{"client_id": "oauth-client", "opener_origin": testOrigin, "api_origin": testOrigin})
+	resp := httptest.NewRecorder()
+	h.ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadGateway || !strings.Contains(resp.Body.String(), `"code":"commander_response_invalid"`) {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestSignedRoutesUseCallbackSessionHandleWithoutCookies(t *testing.T) {
 	var tokenCalls, accountCalls int
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

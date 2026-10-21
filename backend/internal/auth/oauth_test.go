@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ezenki-hq/cloudflare-manager/backend/internal/commander"
 )
 
 type memoryStateStore struct {
@@ -323,6 +326,36 @@ func TestOAuthLogsOnlySanitizedCallbackFailure(t *testing.T) {
 	}
 }
 
+func TestOAuthStartLogsSafeCommanderQueryFailure(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+	h := oauthTestHandler(t, ts, time.Now)
+	h.cfg.StateStore = &memoryStateStore{putErr: errors.Join(ErrStateStoreRejected, fmt.Errorf("private database detail: %w", &commander.DatabaseQueryError{Kind: commander.DatabaseQueryStatementFailed, Statement: 0}))}
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	defer slog.SetDefault(previous)
+
+	req := httptest.NewRequest(http.MethodPost, "https://manager.test/auth/start", nil)
+	req.Header.Set("Origin", "https://front.test")
+	w := httptest.NewRecorder()
+	_, err := h.Start(w, req, StartInput{ClientID: "private-client-id", OpenerOrigin: "https://front.test", APIOrigin: "https://manager.test"})
+	if !errors.Is(err, ErrStateStoreRejected) {
+		t.Fatalf("Start() error = %v; want Commander query rejection", err)
+	}
+	logOutput := logs.String()
+	for _, value := range []string{"oauth_state_write_failed", "commander_query_rejected", "statement_failed", "commander_statement=0"} {
+		if !strings.Contains(logOutput, value) {
+			t.Errorf("log output missing %q: %s", value, logOutput)
+		}
+	}
+	for _, secret := range []string{"private database detail", "private-client-id", "private-state-value", "pkce-verifier"} {
+		if strings.Contains(logOutput, secret) {
+			t.Errorf("log output leaked %q: %s", secret, logOutput)
+		}
+	}
+}
+
 func TestOAuthCallbackRejectsDuplicateStateAndStoreOutage(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("invalid callback reached token endpoint")
@@ -350,6 +383,38 @@ func TestOAuthCallbackRejectsDuplicateStateAndStoreOutage(t *testing.T) {
 			}
 			if tc.name == "duplicate state" && store.takes != previousTakes {
 				t.Fatal("duplicate state parameters reached the state store")
+			}
+		})
+	}
+}
+
+func TestOAuthCallbackPreservesCommanderStateStoreFailures(t *testing.T) {
+	ts := httptest.NewServer(http.NotFoundHandler())
+	defer ts.Close()
+	for _, tc := range []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantReason string
+	}{
+		{name: "query rejected", err: ErrStateStoreRejected, wantStatus: http.StatusBadGateway, wantReason: "state_store_query_rejected"},
+		{name: "invalid response", err: ErrStateStoreInvalidResponse, wantStatus: http.StatusBadGateway, wantReason: "state_store_response_invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := oauthTestHandler(t, ts, time.Now)
+			h.cfg.StateStore = &memoryStateStore{takeErr: tc.err}
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			defer slog.SetDefault(previous)
+
+			w := httptest.NewRecorder()
+			h.callback(w, httptest.NewRequest(http.MethodGet, "https://manager.test/auth/callback?state=opaque-state&code=private-code", nil))
+			if w.Code != tc.wantStatus {
+				t.Fatalf("callback status=%d body=%s; want %d", w.Code, w.Body.String(), tc.wantStatus)
+			}
+			if !strings.Contains(logs.String(), tc.wantReason) || strings.Contains(logs.String(), "private-code") || strings.Contains(logs.String(), "opaque-state") {
+				t.Fatalf("callback log = %s; want safe reason %q", logs.String(), tc.wantReason)
 			}
 		})
 	}

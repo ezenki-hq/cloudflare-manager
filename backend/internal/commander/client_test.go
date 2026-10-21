@@ -3,6 +3,7 @@ package commander
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -244,6 +245,24 @@ func TestDatabaseQueryRejectsAnyFailedStatement(t *testing.T) {
 	results, err := newTestClient(t, server.URL).DatabaseQuery(context.Background(), "RETURN 1; RETURN 2", nil)
 	if err == nil || results != nil || strings.Contains(err.Error(), "private details") {
 		t.Fatalf("results=%#v error=%v; want safe failure", results, err)
+	}
+}
+
+func TestDatabaseQueryReportsSafeStatementFailure(t *testing.T) {
+	server := jsonServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"results": []any{
+			map[string]any{"statement": 0, "status": "ERR", "result": "private SQL details"},
+		}})
+	})
+	defer server.Close()
+
+	_, err := newTestClient(t, server.URL).DatabaseQuery(context.Background(), "RETURN 1", nil)
+	var queryErr *DatabaseQueryError
+	if !errors.As(err, &queryErr) || queryErr.Kind != DatabaseQueryStatementFailed || queryErr.Statement != 0 {
+		t.Fatalf("DatabaseQuery error = %#v; want safe failed-statement detail", err)
+	}
+	if strings.Contains(err.Error(), "private SQL details") {
+		t.Fatalf("database error exposed statement result: %v", err)
 	}
 }
 
