@@ -4,6 +4,8 @@ import type { BackendAPI } from "./api";
 export const BUCKET_RESOURCE_TYPE = "cloudflare-r2-bucket";
 export interface ManagedBucket { accountId:string; jurisdiction:string; name:string; s3Endpoint:string; primaryDomain?:string }
 
+export function bucketEndpoint(accountId:string,jurisdiction:string):string{return `https://${accountId}${jurisdiction==="default"?"":`.${jurisdiction}`}.r2.cloudflarestorage.com`}
+
 export async function registerBucket(api:BackendAPI,bucket:ManagedBucket):Promise<string>{
   const result=await api.registerResource({account_id:bucket.accountId,jurisdiction:bucket.jurisdiction,bucket:bucket.name,s3_endpoint:bucket.s3Endpoint,...(bucket.primaryDomain?{primary_domain:bucket.primaryDomain}:{})});
   if(!result.resource_id)throw new Error("Manager did not return the R2 resource ID");return result.resource_id;

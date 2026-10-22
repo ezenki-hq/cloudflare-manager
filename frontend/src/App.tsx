@@ -7,7 +7,7 @@ import { getCurrentManagerRedirect } from "./managerRedirect";
 import { provisionConnection, revokeConnection } from "./connections";
 import { BucketDetail } from "./components/BucketDetail";
 import { TeardownPage } from "./components/TeardownPage";
-import { findBucketResource, registerBucket, removeBucketRecord, setBucketPrimaryDomain, type ManagedBucket } from "./resources";
+import { bucketEndpoint, findBucketResource, registerBucket, removeBucketRecord, setBucketPrimaryDomain, type ManagedBucket } from "./resources";
 import { loadLatestTeardown, type TeardownSnapshot } from "./runHistory";
 import { startTeardown } from "./teardown";
 import { managerPageFromPath, navigateManagerPage, type ManagerPage } from "./managerPage";
@@ -68,7 +68,7 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
     accountId,
     jurisdiction: selectedBucket.jurisdiction ?? jurisdiction,
     name: selectedBucket.name,
-    s3Endpoint: s3Endpoint(accountId, selectedBucket.jurisdiction ?? jurisdiction),
+    s3Endpoint: bucketEndpoint(accountId, selectedBucket.jurisdiction ?? jurisdiction),
   } : null, [selectedBucket, accountId, jurisdiction]);
 
   const refreshTeardown = useCallback(async () => {
@@ -251,7 +251,7 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
         api.getBucket(accountId, bucketJurisdiction, bucket.name),
         api.listDomains(accountId, bucketJurisdiction, bucket.name),
         api.listZones(accountId),
-        findBucketResource(api, { accountId, jurisdiction: bucketJurisdiction, name: bucket.name, s3Endpoint: s3Endpoint(accountId, bucketJurisdiction) }),
+        findBucketResource(api, { accountId, jurisdiction: bucketJurisdiction, name: bucket.name, s3Endpoint: bucketEndpoint(accountId, bucketJurisdiction) }),
       ]);
       setSelectedDetail(detail);
       setDomains(domainList);
@@ -310,7 +310,7 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
       let id = resourceId;
       if (!id) id = await registerBucket(api, {
         accountId, jurisdiction: selectedBucket.jurisdiction ?? jurisdiction, name: selectedBucket.name,
-        s3Endpoint: s3Endpoint(accountId, selectedBucket.jurisdiction ?? jurisdiction), ...(domain ? { primaryDomain: domain } : {}),
+        s3Endpoint: bucketEndpoint(accountId, selectedBucket.jurisdiction ?? jurisdiction), ...(domain ? { primaryDomain: domain } : {}),
       });
       if (domain) await setBucketPrimaryDomain(caller, id, domain);
       else await setBucketPrimaryDomain(caller, id);
@@ -355,7 +355,7 @@ export function App({ bridge, api, backendOrigin, reloadPage = reloadWindow }: A
     if (!bucketName.trim()) return;
     await runAction("create-bucket", async () => {
       const bucket = await api.createBucket(accountId, jurisdiction, bucketName.trim());
-      const managed: ManagedBucket = { accountId, jurisdiction, name: bucket.name, s3Endpoint: s3Endpoint(accountId, jurisdiction) };
+      const managed: ManagedBucket = { accountId, jurisdiction, name: bucket.name, s3Endpoint: bucketEndpoint(accountId, jurisdiction) };
       await registerBucket(api, managed);
       setBucketName("");
       await loadBuckets();
@@ -499,5 +499,4 @@ function statusOf(error: unknown): number | undefined { return isRecord(error) &
 function message(error: unknown): string { return error instanceof Error ? error.message : "The request could not be completed"; }
 function isRecord(value: unknown): value is Record<string, any> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function accountName(accounts: Account[], id: string): string { return accounts.find((account) => account.id === id)?.name ?? id; }
-function s3Endpoint(accountId: string, jurisdiction: string): string { return `https://${accountId}${jurisdiction === "default" ? "" : `.${jurisdiction}`}.r2.cloudflarestorage.com`; }
 function apiOrigin(value: string): string { try { return new URL(value || window.location.origin, window.location.origin).origin; } catch { return window.location.origin; } }
