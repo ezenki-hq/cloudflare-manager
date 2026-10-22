@@ -91,7 +91,7 @@ After a successful install, the existing health gated redirect and reload open t
 
 ## Integration documentation
 
-Add `docs/integrations/CLOUDFLARE_MANAGER_INTEGRATION_GUIDE.md` for consuming manager authors and link it from the README. It must document resource discovery, the exact `create-bucket` request and response, the signed-in user's confirmation step, CDN status, cancellation and retry behavior, the existing `create-connection` request and secret names, how to consume the resulting connection, and the install prompt when the full stack service is unavailable. It must state that teardown preserves the S3 service resource, bucket records, Cloudflare buckets, and CDN domains.
+Add `CLOUDFLARE_MANAGER_INTEGRATION_GUIDE.md` in the project root for consuming manager authors and link it from the README. It must document resource discovery, the exact `create-bucket` request and response, the signed-in user's confirmation step, CDN status, cancellation and retry behavior, the existing `create-connection` request and secret names, how to consume the resulting connection, and the install prompt when the full stack service is unavailable. It must state that teardown preserves the S3 service resource, bucket records, Cloudflare buckets, and CDN domains.
 
 ## Verification
 
