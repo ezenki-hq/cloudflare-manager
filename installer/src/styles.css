@@ -45,5 +45,8 @@ button, input { font: inherit; }
 .button-secondary { color: #23443a; background: #eaf2ee; }
 .button-link { display: inline-flex; align-items: center; text-decoration: none; color: #fff; background: #465f56; }
 .inline-error { margin: 0 0 12px; color: #a54035; font-size: 12px; }
+.command-notice { display: grid; gap: 6px; margin: 12px 0; padding: 12px 14px; border: 1px solid #d7b26a; border-radius: 10px; background: #fff8e8; color: #5b4518; font-size: 13px; }
+.command-notice code { font-size: 12px; }
+.metadata-status { margin: 8px 0; color: #716b5d; font-size: 12px; }
 footer { max-width: 790px; margin-top: 24px; color: #84918d; font-size: 10px; }
 @media (max-width: 620px) { .install-shell { padding: 0 16px 24px; } .brand { height: 68px; } .hero { padding: 32px 0 22px; } .panel { padding: 18px; } .oauth-setup dl > div { grid-template-columns: 1fr; gap: 1px; } }

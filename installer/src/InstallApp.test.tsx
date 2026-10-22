@@ -14,7 +14,7 @@ const install: RunItem = { id: "install-1", action: "install", status: 1, queued
 
 afterEach(cleanup);
 
-function setup(options: { initialRun?: RunItem | null; event?: { seq: number; message: string } | null; initialTeardown?: RunItem | null; startError?: Error; historyError?: Error; commanderConnection?: boolean } = {}) {
+function setup(options: { initialRun?: RunItem | null; event?: { seq: number; message: string } | null; initialTeardown?: RunItem | null; startError?: Error; historyError?: Error; commanderConnection?: boolean; metadata?: unknown; metadataError?: Error } = {}) {
   let currentRun = options.initialRun === undefined ? install : options.initialRun;
   let currentTeardown = options.initialTeardown ?? null;
   let currentEvent = options.event === undefined ? { seq: 5, message: "Install runner started" } : options.event;
@@ -24,6 +24,7 @@ function setup(options: { initialRun?: RunItem | null; event?: { seq: number; me
       if (action === "install" && options.historyError) throw options.historyError;
       return action === "install" ? currentRun : currentTeardown;
     }),
+    getMetadata: options.metadataError ? vi.fn().mockRejectedValue(options.metadataError) : vi.fn().mockResolvedValue(options.metadata ?? {}),
     getRunEvents: vi.fn().mockImplementation(async () => ({ events: currentEvent ? [{ ...currentEvent, phase: "deploy", at: "" }] : [], limit: 1, offset: 0, total: currentEvent ? 1 : 0 })),
     getManager: vi.fn().mockResolvedValue("manager-1"),
     getResources: vi.fn().mockResolvedValue({ items: [{ id: "commander-resource", manager: "commander-manager", type: "commander" }] }),
@@ -39,7 +40,7 @@ function setup(options: { initialRun?: RunItem | null; event?: { seq: number; me
   const listeners = new Set<(event: InterfaceEvent) => void>();
   const bridge: CommanderBridge = {
     caller,
-    wire: { end: vi.fn(), startInterface: vi.fn().mockImplementation(async () => { commanderConnectionExists = true; return { id: "child", close: Promise.resolve({ manager: "commander-manager", ok: true, result: { connection: { id: "connection-1", manager: "manager-1", resource: "commander-resource" } } }) }; }) } as any,
+    wire: { end: vi.fn(), close: vi.fn(), startInterface: vi.fn().mockImplementation(async () => { commanderConnectionExists = true; return { id: "child", close: Promise.resolve({ manager: "commander-manager", ok: true, result: { connection: { id: "connection-1", manager: "manager-1", resource: "commander-resource" } } }) }; }) } as any,
     onEvent(handler) { listeners.add(handler); return () => listeners.delete(handler); },
   };
   return {
@@ -52,6 +53,42 @@ function setup(options: { initialRun?: RunItem | null; event?: { seq: number; me
     setEvent(event: { seq: number; message: string } | null) { currentEvent = event; },
   };
 }
+
+describe("installer metadata command guidance", () => {
+  it("asks the user to install the full stack manager without closing the child", async () => {
+    const harness = setup({ initialRun: null, event: null, metadata: { action: "create-bucket" } });
+    render(<InstallApp bridge={harness.bridge} defaults={defaults} />);
+
+    expect(await screen.findByText(/install the full stack cloudflare manager/i)).toBeTruthy();
+    expect(screen.getByText(/create-bucket/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Install" })).toBeTruthy();
+    expect(harness.bridge.wire.close).not.toHaveBeenCalled();
+  });
+
+  it("renders an untrusted action as text", async () => {
+    const harness = setup({ initialRun: null, event: null, metadata: { action: "<img src=x>" } });
+    render(<InstallApp bridge={harness.bridge} defaults={defaults} />);
+
+    expect(await screen.findByText("<img src=x>")).toBeTruthy();
+    expect(document.querySelector("img[src=x]")).toBeNull();
+  });
+
+  it.each([undefined, {}, { action: "  " }])("does not show a command notice when action is absent or blank", async (metadata) => {
+    const harness = setup({ initialRun: null, event: null, metadata });
+    render(<InstallApp bridge={harness.bridge} defaults={defaults} />);
+
+    await screen.findByRole("button", { name: "Install" });
+    expect(screen.queryByText(/install the full stack cloudflare manager/i)).toBeNull();
+  });
+
+  it("shows a nonblocking status when interface metadata cannot be read", async () => {
+    const harness = setup({ initialRun: null, event: null, metadataError: new Error("metadata unavailable") });
+    render(<InstallApp bridge={harness.bridge} defaults={defaults} />);
+
+    expect(await screen.findByText(/could not check the incoming interface command/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Install" })).toBeTruthy();
+  });
+});
 
 describe("installer interface", () => {
   it("reloads the containing Commander page once for a saved successful install", async () => {

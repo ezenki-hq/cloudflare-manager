@@ -33,6 +33,8 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
   const [busy, setBusy] = useState(false);
   const [savingClientID, setSavingClientID] = useState(false);
   const [error, setError] = useState("");
+  const [commandAction, setCommandAction] = useState("");
+  const [commandMetadataError, setCommandMetadataError] = useState(false);
   const currentRunId = useRef<string | null>(null);
   const locallyActiveRun = useRef<RunItem | null>(null);
   const teardownRunId = useRef<string | null>(null);
@@ -120,6 +122,17 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
     return () => { alive = false; refreshVersion.current += 1; unsubscribe(); bridge.wire.end(); };
   }, [bridge, refresh]);
 
+  useEffect(() => {
+    let alive = true;
+    void caller.getMetadata().then((metadata) => {
+      if (!alive || !isRecord(metadata) || typeof metadata.action !== "string" || !metadata.action.trim()) return;
+      setCommandAction(metadata.action.trim());
+    }).catch(() => {
+      if (alive) setCommandMetadataError(true);
+    });
+    return () => { alive = false; };
+  }, [caller]);
+
   useEffect(() => { teardownRunId.current = teardownRun?.id ?? null; }, [teardownRun?.id]);
 
   useEffect(() => {
@@ -192,6 +205,8 @@ export function InstallApp({ bridge, defaults, reloadPage = reloadWindow }: Inst
       <div className="panel-heading"><div><h2 id="install-title">Manager service</h2><p>Install the full stack manager in Deploy Commander.</p></div><span className={`status-pill status-${state}`}>{loading ? "Loading status" : stateLabel(state)}</span></div>
       {reloadBlocked && <p role="alert" className="inline-error">The installer did not reload automatically. <button className="button button-secondary" type="button" onClick={reloadPage}>Reload interface</button></p>}
       {error && <p className="inline-error" role="alert">{error}</p>}
+      {commandAction && <div className="command-notice" role="status"><strong>Install the full stack Cloudflare Manager to use this request.</strong><span>Request: <code>{commandAction}</code></span></div>}
+      {commandMetadataError && <p className="metadata-status" role="status">Could not check the incoming interface command. You can still install the full stack manager.</p>}
       <form className="install-form" onSubmit={(event) => void submit(event)}>
         <button className="button" disabled={loading || busy || state !== "ready" || connectionState !== "ready" || !commanderConnection} type="submit">{busy ? "Starting install…" : state === "ready" ? "Install" : stateLabel(state)}</button>
       </form>
@@ -239,4 +254,8 @@ function message(error: unknown): string {
 
 function isActive(status: number | undefined): boolean {
   return status === 0 || status === 1;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
