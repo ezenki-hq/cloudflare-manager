@@ -156,6 +156,47 @@ func TestOAuthStartAndCallbackUseSignedStateAndSavedClientID(t *testing.T) {
 	}
 }
 
+func TestOAuthCallbackUsesSavedRedirectWhenProxyHeadersDiffer(t *testing.T) {
+	var gotForm url.Values
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		gotForm = r.Form
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "proxy-access-token", "expires_in": 900})
+	}))
+	defer tokenServer.Close()
+	h := oauthTestHandler(t, tokenServer, time.Now)
+
+	start := httptest.NewRequest(http.MethodPost, "http://manager.example.test/auth/start", nil)
+	start.Host = "cloudflare-manager:8080"
+	start.Header.Set("Origin", "http://manager.example.test")
+	startResponse := httptest.NewRecorder()
+	authorizationURL, err := h.Start(startResponse, start, StartInput{
+		ClientID:     "client",
+		OpenerOrigin: "http://manager.example.test",
+		APIOrigin:    "http://manager.example.test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(authorizationURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	callback := httptest.NewRequest(http.MethodGet, "http://manager.example.test/auth/callback?code=abc&state="+url.QueryEscape(parsed.Query().Get("state")), nil)
+	callback.Host = "another-manager:8080"
+	callback.Header.Set("X-Forwarded-Host", "different-proxy-host.example")
+	callback.Header.Set("X-Forwarded-Proto", "https")
+	response := httptest.NewRecorder()
+	h.callback(response, callback)
+	if response.Code != http.StatusOK {
+		t.Fatalf("proxy-routed callback status=%d body=%s", response.Code, response.Body.String())
+	}
+	if gotForm.Get("redirect_uri") != "http://manager.example.test/auth/callback" {
+		t.Fatalf("token redirect_uri=%q; want saved public redirect URI", gotForm.Get("redirect_uri"))
+	}
+}
+
 func TestOAuthStartChecksAPIHostAndOrigin(t *testing.T) {
 	ts := httptest.NewServer(http.NotFoundHandler())
 	defer ts.Close()
@@ -290,13 +331,10 @@ func TestOAuthRejectsForgedExpiredAndMismatchedState(t *testing.T) {
 	}{
 		{name: "missing", requestURL: "https://manager.test/auth/callback?code=bad&state=missing"},
 		{name: "expired", state: PendingState{Verifier: "v", ClientID: "id", RedirectURI: "https://manager.test/auth/callback", OpenerOrigin: "https://front.test", ManagerID: "manager-a", ExpiresAt: now.Add(-time.Second).Unix()}, requestURL: "https://manager.test/auth/callback?code=bad&state=expired"},
-		{name: "wrong host", state: PendingState{Verifier: "v", ClientID: "id", RedirectURI: "https://manager.test/auth/callback", OpenerOrigin: "https://front.test", ManagerID: "manager-a", ExpiresAt: now.Add(time.Minute).Unix()}, requestURL: "https://attacker.test/auth/callback?code=bad&state=wrong-host"},
+		{name: "wrong manager", state: PendingState{Verifier: "v", ClientID: "id", RedirectURI: "https://manager.test/auth/callback", OpenerOrigin: "https://front.test", ManagerID: "another-manager", ExpiresAt: now.Add(time.Minute).Unix()}, requestURL: "https://manager.test/auth/callback?code=bad&state=wrong-manager"},
 	} {
 		if test.name != "missing" {
-			stateValue := strings.TrimPrefix(test.name, "wrong ")
-			if test.name == "wrong host" {
-				stateValue = "wrong-host"
-			}
+			stateValue := strings.ReplaceAll(test.name, " ", "-")
 			if err := h.cfg.StateStore.Put(context.Background(), stateValue, test.state); err != nil {
 				t.Fatal(err)
 			}

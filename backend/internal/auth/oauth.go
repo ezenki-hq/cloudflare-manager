@@ -183,7 +183,8 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Cloudflare Manager could not verify authorization state. Try again shortly.", http.StatusServiceUnavailable)
 		return
 	}
-	state, err := h.cfg.StateStore.Take(r.Context(), stateToken, h.now())
+	callbackAt := h.now()
+	state, err := h.cfg.StateStore.Take(r.Context(), stateToken, callbackAt)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrStateStoreUnavailable):
@@ -201,7 +202,7 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if state.ManagerID != h.cfg.ManagerID || state.Verifier == "" || state.ClientID == "" || !validOrigin(state.OpenerOrigin) || !validRedirect(state.RedirectURI) || state.ExpiresAt <= h.now().Unix() || state.RedirectURI != callbackRedirectURI(r) {
+	if state.ManagerID != h.cfg.ManagerID || state.Verifier == "" || state.ClientID == "" || !validOrigin(state.OpenerOrigin) || !validRedirect(state.RedirectURI) || state.ExpiresAt <= callbackAt.Unix() {
 		h.logCallbackFailure(r, flowID, "state_context_mismatch")
 		http.Error(w, "Authorization state did not match this manager. Return to Cloudflare Manager and try again.", http.StatusBadRequest)
 		return
@@ -253,14 +254,6 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) logCallbackFailure(r *http.Request, flowID, reason string) {
 	slog.Warn("OAuth callback rejected or failed", "event", "oauth_callback", "flow_id", flowID, "reason", reason, "request_host", r.Host)
-}
-
-func callbackRedirectURI(r *http.Request) string {
-	scheme := "http"
-	if r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
-		scheme = "https"
-	}
-	return scheme + "://" + r.Host + "/auth/callback"
 }
 
 func flowIdentifier(rawState string) string {
