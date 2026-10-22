@@ -53,3 +53,59 @@ func TestPrepareCommanderStopsBeforeHealthOnResourceFailure(t *testing.T) {
 		t.Fatalf("prepareCommander error = %v, want resource ensure failure", err)
 	}
 }
+
+func TestPrepareCommanderAcceptsCommanderResourceTypeInConfig(t *testing.T) {
+	resourceCreated := false
+	createCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/manager":
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "manager-1"})
+		case "/api/v1/resources/mine":
+			items := []any{}
+			if resourceCreated {
+				items = append(items, map[string]any{"id": "service-1", "name": "Cloudflare R2 S3", "type": "s3", "manager": "manager-1", "external": true})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": items, "limit": 100, "offset": 0, "total": len(items)})
+		case "/api/v1/resources/service-1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"resource": map[string]any{"id": "service-1", "name": "Cloudflare R2 S3", "type": "s3", "manager": "manager-1", "external": true},
+				"config": map[string]any{
+					"id": "service-1", "name": "Cloudflare R2 S3", "resource_type": "s3", "manager": "manager-1",
+					"metadata": map[string]any{"provider": "cloudflare-r2", "role": "provisioner", "contract_version": 1},
+				},
+			})
+		case "/api/v1/resources":
+			if r.Method != http.MethodPost {
+				t.Errorf("resource request method = %q, want POST", r.Method)
+			}
+			resourceCreated = true
+			createCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"resource": map[string]any{"id": "service-1", "name": "Cloudflare R2 S3", "type": "s3", "manager": "manager-1", "external": true},
+				"config": map[string]any{
+					"id": "service-1", "name": "Cloudflare R2 S3", "resource_type": "s3", "manager": "manager-1",
+					"metadata": map[string]any{"provider": "cloudflare-r2", "role": "provisioner", "contract_version": 1},
+				},
+			})
+		default:
+			t.Errorf("unexpected Commander request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := commander.NewClient(server.URL+"/api/v1", "manager-1", "password", server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := prepareCommander(t.Context(), "manager-1", client); err != nil {
+		t.Fatalf("prepareCommander rejected Commander resource_type response: %v", err)
+	}
+	if err := prepareCommander(t.Context(), "manager-1", client); err != nil {
+		t.Fatalf("prepareCommander rejected existing Commander resource_type response: %v", err)
+	}
+	if createCalls != 1 {
+		t.Fatalf("created the provisioner %d times, want once across install and reinstall", createCalls)
+	}
+}
