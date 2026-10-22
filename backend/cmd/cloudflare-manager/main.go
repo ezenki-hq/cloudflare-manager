@@ -18,6 +18,7 @@ import (
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/cloudflare"
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/commander"
 	managerjwt "github.com/ezenki-hq/cloudflare-manager/backend/internal/jwt"
+	managerpkg "github.com/ezenki-hq/cloudflare-manager/backend/internal/manager"
 	"github.com/ezenki-hq/cloudflare-manager/backend/internal/server"
 )
 
@@ -71,10 +72,10 @@ func serve() error {
 		return fmt.Errorf("configure Commander: %w", err)
 	}
 	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 12*time.Second)
-	err = commanderClient.VerifyManager(verifyCtx)
+	err = prepareCommander(verifyCtx, managerID, commanderClient)
 	verifyCancel()
 	if err != nil {
-		return fmt.Errorf("verify Commander manager: %w", err)
+		return err
 	}
 	stateStore, err := auth.NewPendingStore(commanderClient, managerID, managerPassword)
 	if err != nil {
@@ -104,6 +105,16 @@ func serve() error {
 	}()
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
+	}
+	return nil
+}
+
+func prepareCommander(ctx context.Context, managerID string, client *commander.Client) error {
+	if err := client.VerifyManager(ctx); err != nil {
+		return fmt.Errorf("verify Commander manager: %w", err)
+	}
+	if _, err := managerpkg.NewService(managerID, client, nil).EnsureServiceResource(ctx); err != nil {
+		return fmt.Errorf("ensure S3 service resource: %w", err)
 	}
 	return nil
 }

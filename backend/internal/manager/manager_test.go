@@ -10,12 +10,16 @@ import (
 )
 
 type fakeCommander struct {
-	resources      []commander.Resource
-	resource       commander.ResourceDetail
-	connection     commander.ConnectionDetail
-	connectionList []commander.Connection
-	deleted        []string
-	labels         map[string]string
+	resources         []commander.Resource
+	resource          commander.ResourceDetail
+	listResourcesErr  error
+	getResourceErr    error
+	createResourceErr error
+	createResources   []commander.ResourceCreate
+	connection        commander.ConnectionDetail
+	connectionList    []commander.Connection
+	deleted           []string
+	labels            map[string]string
 }
 type fakeCloudflare struct {
 	createErr bool
@@ -23,13 +27,14 @@ type fakeCloudflare struct {
 }
 
 func (f *fakeCommander) ListMyResources(context.Context, string) ([]commander.Resource, error) {
-	return f.resources, nil
+	return f.resources, f.listResourcesErr
 }
 func (f *fakeCommander) GetResource(context.Context, string) (commander.ResourceDetail, error) {
-	return f.resource, nil
+	return f.resource, f.getResourceErr
 }
-func (f *fakeCommander) CreateResource(context.Context, commander.ResourceCreate) (commander.ResourceDetail, error) {
-	return f.resource, nil
+func (f *fakeCommander) CreateResource(_ context.Context, input commander.ResourceCreate) (commander.ResourceDetail, error) {
+	f.createResources = append(f.createResources, input)
+	return f.resource, f.createResourceErr
 }
 func (f *fakeCommander) ListConnections(context.Context, string) ([]commander.Connection, error) {
 	return append([]commander.Connection(nil), f.connectionList...), nil
