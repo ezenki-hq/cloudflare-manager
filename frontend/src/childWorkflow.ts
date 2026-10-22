@@ -19,8 +19,8 @@ export async function handleChildAction(caller:RPCCaller,api:BackendAPI,metadata
 }
 
 async function createAction(caller:RPCCaller,api:BackendAPI,manager:string,metadata:Record<string,unknown>,callingManager:string|null):Promise<InterfaceResponse>{
-  const resource=stringField(metadata.resource,"resource");if(!callingManager)throw new WorkflowError("The requesting application manager is unavailable",403);const labels=requestedLabels(metadata.labels,"created");const permission=metadata.permission==="read-write"?"read-write":"read-only";
-  const id=await provisionConnection(caller,api,{resourceId:resource,managerId:callingManager,permission,labels});return{manager,ok:true,result:{connection:{id,resource,labels}}};
+  const resource=stringField(metadata.resource,"resource");if(!callingManager)throw new WorkflowError("The requesting application manager is unavailable",403);const labels=metadata.labels===undefined?undefined:requestedLabels(metadata.labels,"created");const permission=metadata.permission==="read-write"?"read-write":"read-only";
+  const id=await provisionConnection(caller,api,{resourceId:resource,managerId:callingManager,permission,...(labels?{labels}:{})});return{manager,ok:true,result:{connection:{id,resource,...(labels?{labels}:{})}}};
 }
 async function linkAction(api:BackendAPI,manager:string,metadata:Record<string,unknown>):Promise<InterfaceResponse>{
   const resource=stringField(metadata.resource,"resource"),connection=stringField(metadata.connection,"connection"),labels=requestedLabels(metadata.labels,"imported");const result=await api.linkConnection({resource_id:resource,connection_id:connection,labels});return{manager,ok:true,result:result.connection};

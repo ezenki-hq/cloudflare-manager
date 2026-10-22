@@ -141,6 +141,20 @@ button:disabled { cursor: not-allowed; opacity: .54; }
 .teardown-message .teardown-event { padding-top: 8px; border-top: 1px solid rgba(75, 93, 84, .12); color: #64736d; }
 .teardown-message .button { margin-top: 12px; }
 .loading-card { margin-top: 80px; padding: 24px; border: 1px solid #e2e9e6; border-radius: 12px; background: #fff; color: #64746e; }
+.bucket-child-page { max-width: 760px; margin: 54px auto; padding: 0 20px; }
+.bucket-child-panel { padding: 30px; }
+.bucket-child-panel h1 { margin: 12px 0 8px; color: #182a2b; font-size: clamp(26px, 3.5vw, 36px); line-height: 1.12; letter-spacing: -.04em; }
+.bucket-child-panel > p { margin-bottom: 20px; }
+.bucket-child-auth { margin-top: 20px; padding: 18px; border: 1px solid #e4ece8; border-radius: 9px; background: #f8fbf9; }
+.bucket-child-auth p { margin-top: 0; color: #52635c; font-size: 13px; }
+.bucket-child-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 24px; }
+.bucket-child-form label { display: grid; gap: 6px; color: #485a56; font-size: 11px; font-weight: 700; }
+.bucket-child-form input, .bucket-child-form select { width: 100%; min-width: 0; height: 40px; padding: 0 11px; border: 1px solid #dce5e1; border-radius: 7px; color: #243632; background: #fff; font-size: 12px; font-weight: 500; }
+.bucket-child-form input:focus, .bucket-child-form select:focus { border-color: #67a28f; outline: none; box-shadow: 0 0 0 3px rgba(67, 142, 115, .11); }
+.bucket-child-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 9px; margin-top: 8px; }
+.bucket-progress { grid-column: 1 / -1; padding: 12px 14px; border-radius: 8px; background: #f4f8f6; color: #52635c; font-size: 12px; }
+.bucket-progress ul { margin: 7px 0 0; padding-left: 18px; }
+.bucket-progress li + li { margin-top: 4px; }
 .footer { margin-top: 30px; padding-top: 15px; display: flex; justify-content: space-between; gap: 14px; border-top: 1px solid #e0e8e4; color: #84918d; font-size: 10px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 
@@ -162,6 +176,8 @@ button:disabled { cursor: not-allowed; opacity: .54; }
   .oauth-setup dl > div { grid-template-columns: 1fr; gap: 1px; }
   .filter-row { grid-template-columns: 1fr; }
   .domain-form, .connection-form { grid-template-columns: 1fr; }
+  .bucket-child-form { grid-template-columns: 1fr; }
+  .bucket-child-actions { justify-content: flex-start; flex-wrap: wrap; }
   .domain-form .button, .connection-form .button { justify-self: start; }
   .footer { flex-direction: column; }
   .run-messages { text-align: left; }
