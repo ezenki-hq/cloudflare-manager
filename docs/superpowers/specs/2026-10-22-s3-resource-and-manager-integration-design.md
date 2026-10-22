@@ -73,7 +73,7 @@ Successful child completion returns only the identities and nonsecret connection
 
 This object is the `result` member of a successful `InterfaceResponse`; `manager` and `ok: true` are the outer envelope. The `cdn` member is omitted when no CDN hostname was requested. Its `enabled` and `status` fields mirror the current Cloudflare domain response; the shown pending values are an example, not a promise about timing. The result never includes OAuth tokens or S3 access keys. The caller verifies the returned resource ID, type, and owning manager against a fresh Commander resource listing before using it.
 
-The child does not issue application credentials as part of `create-bucket`. A caller that needs S3 access opens the existing `create-connection` child action with the returned bucket resource ID. That action uses trusted caller identity, provisions one bucket scoped credential pair, stores secret values in the consuming manager's Commander connection secrets, and returns only connection identity. The integration guide must show both calls, the secret key names, and runner secret references.
+The child does not issue application credentials as part of `create-bucket`. A caller that needs S3 access opens the existing `create-connection` child action with the returned bucket resource ID. Generic callers may omit `labels`; the existing Custom Deployer group label pair remains supported when supplied. That action uses trusted caller identity, provisions one bucket scoped credential pair, stores secret values in the consuming manager's Commander connection secrets, and returns only connection identity. The integration guide must show both calls, the secret key names, and runner secret references.
 
 ## Errors, retries, and persistence
 
