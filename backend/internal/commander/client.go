@@ -47,7 +47,7 @@ type Resource struct {
 type ResourceConfig struct {
 	ID                 string         `json:"id"`
 	Name               string         `json:"name"`
-	Type               string         `json:"type"`
+	Type               string         `json:"resource_type"`
 	Manager            string         `json:"manager"`
 	Metadata           map[string]any `json:"metadata"`
 	PlatformConnection any            `json:"platform_connection,omitempty"`
