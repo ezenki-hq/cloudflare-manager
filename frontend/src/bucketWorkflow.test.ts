@@ -108,6 +108,13 @@ describe("R2 bucket and CDN provisioning workflow", () => {
     expect(result.cdn).toEqual({ domain, enabled: true, status: { ownership: "active", ssl: "active" } });
   });
 
+  it("retains attached-domain progress when Cloudflare status cannot be read", async () => {
+    const { caller, api, request } = harness();
+    vi.mocked(api.listDomains).mockResolvedValueOnce([]).mockRejectedValueOnce(new Error("temporary status failure"));
+    await expect(setupBucket(caller, api, request, { ...selection, mode: "existing", domain, zoneId })).rejects.toMatchObject({ failedStep: "status", progress: { bucketExists: true, resourceId: bucketResourceId, domainAttached: true, lastCompleted: "domain" } });
+    expect(api.attachDomain).toHaveBeenCalledTimes(1);
+  });
+
   it("recognizes an attached domain on retry after primary metadata update fails", async () => {
     const { caller, api, request } = harness();
     vi.mocked(api.listDomains).mockResolvedValueOnce([]).mockResolvedValueOnce([{ domain, enabled: false, zoneId, status: { ownership: "pending", ssl: "pending" } }]).mockResolvedValueOnce([{ domain, enabled: false, zoneId, status: { ownership: "pending", ssl: "pending" } }]).mockResolvedValueOnce([{ domain, enabled: false, zoneId, status: { ownership: "pending", ssl: "pending" } }]);

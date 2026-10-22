@@ -20,7 +20,7 @@ void (async () => {
   } catch {
     // The published installer can open before Deploy Commander has attached RPC context.
   }
-  if (isRecord(metadata) && typeof metadata.action === "string") {
+  if (isRecord(metadata) && "action" in metadata) {
     let closed = false;
     const close = (response: import("@ezenki/deploy-commander-installer-interface").InterfaceResponse) => {
       if (closed) return;
@@ -38,12 +38,12 @@ void (async () => {
       }
       return;
     }
-    if (["create-connection", "link-connection", "unlink-connection", "delete-connection"].includes(metadata.action)) {
+    if (typeof metadata.action === "string" && ["create-connection", "link-connection", "unlink-connection", "delete-connection"].includes(metadata.action)) {
       close(await handleChildAction(bridge.caller, api, metadata, callingManager));
       return;
     }
     const manager = await bridge.caller.getManager().catch(() => "");
-    close({ manager, ok: false, error: { message: `Unsupported child action: ${metadata.action}`, status: 400 } });
+    close({ manager, ok: false, error: { message: typeof metadata.action === "string" ? `Unsupported child action: ${metadata.action}` : "A child action must be a string", status: 400 } });
     return;
   }
   root.render(<App bridge={bridge} api={api} backendOrigin={backendOrigin} />);

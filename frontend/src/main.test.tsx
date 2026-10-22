@@ -40,6 +40,12 @@ describe("published manager child dispatch", () => {
     expect(bridge.wire.end).toHaveBeenCalledTimes(1);
   });
 
+  it("closes malformed action metadata instead of rendering the manager home", async () => {
+    await launch({ action: 123 });
+    await waitFor(() => expect(bridge.wire.close).toHaveBeenCalledWith({ manager: "cloudflare-manager", ok: false, error: { message: "A child action must be a string", status: 400 } }));
+    expect(render).not.toHaveBeenCalled();
+  });
+
   it("closes invalid bucket requests before rendering or making API calls", async () => {
     validateBucketRequest.mockRejectedValueOnce(new Error("The selected resource is not this manager's S3 provisioner"));
     await launch({ action: "create-bucket", resource: "foreign-resource" });

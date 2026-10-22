@@ -108,7 +108,12 @@ export async function setupBucket(caller: RPCCaller, api: BackendAPI, request: B
         if (attached && attached.zoneId && attached.zoneId !== zoneId) fail("domain");
         if (!attached) {
           await api.attachDomain(selection.accountId, selection.jurisdiction, selection.bucket, domainName, zoneId);
-          const updated = await api.listDomains(selection.accountId, selection.jurisdiction, selection.bucket);
+          progress.domainAttached = true;
+          progress.lastCompleted = "domain";
+          report();
+          let updated: Domain[] = [];
+          try { updated = await api.listDomains(selection.accountId, selection.jurisdiction, selection.bucket); }
+          catch { fail("status"); }
           attached = updated.find((domain) => domain.domain.toLowerCase() === domainName.toLowerCase());
           if (!attached) fail("status");
         }
