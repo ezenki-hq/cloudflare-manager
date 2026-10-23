@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -67,11 +68,13 @@ func serve() error {
 	if err != nil || len(jwtSecret) != 32 {
 		return fmt.Errorf("JWT_SECRET must be an unpadded base64url value containing 32 bytes")
 	}
+	slog.Info("Cloudflare Manager startup", "stage", "configuration_validated")
 	commanderClient, err := commander.NewClient(managerAPI, managerID, managerPassword, &http.Client{Timeout: 12 * time.Second})
 	if err != nil {
 		return fmt.Errorf("configure Commander: %w", err)
 	}
 	verifyCtx, verifyCancel := context.WithTimeout(context.Background(), 12*time.Second)
+	slog.Info("Cloudflare Manager startup", "stage", "commander_verification_started")
 	err = prepareCommander(verifyCtx, managerID, commanderClient)
 	verifyCancel()
 	if err != nil {
@@ -103,6 +106,7 @@ func serve() error {
 		defer cancel()
 		_ = httpServer.Shutdown(shutdown)
 	}()
+	slog.Info("Cloudflare Manager startup", "stage", "http_listener_starting")
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}
@@ -113,6 +117,7 @@ func prepareCommander(ctx context.Context, managerID string, client *commander.C
 	if err := client.VerifyManager(ctx); err != nil {
 		return fmt.Errorf("verify Commander manager: %w", err)
 	}
+	slog.Info("Cloudflare Manager startup", "stage", "commander_verified")
 	if _, err := managerpkg.NewService(managerID, client, nil).EnsureServiceResource(ctx); err != nil {
 		return fmt.Errorf("ensure S3 service resource: %w", err)
 	}

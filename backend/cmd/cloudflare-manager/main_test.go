@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,6 +52,46 @@ func TestPrepareCommanderStopsBeforeHealthOnResourceFailure(t *testing.T) {
 	err = prepareCommander(t.Context(), "manager-1", client)
 	if err == nil || !strings.Contains(err.Error(), "ensure S3 service resource") {
 		t.Fatalf("prepareCommander error = %v, want resource ensure failure", err)
+	}
+}
+
+func TestPrepareCommanderLogsSafeStartupStagesOnFailure(t *testing.T) {
+	const managerPassword = "sentinel-manager-password"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/manager":
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "manager-1"})
+		case "/api/v1/resources/mine":
+			http.Error(w, managerPassword, http.StatusServiceUnavailable)
+		default:
+			t.Errorf("unexpected Commander request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := commander.NewClient(server.URL+"/api/v1", "manager-1", managerPassword, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	err = prepareCommander(t.Context(), "manager-1", client)
+	if err == nil || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("prepareCommander error = %v, want status 503", err)
+	}
+	for _, stage := range []string{"commander_verified", "s3_provisioner_lookup_started"} {
+		if !strings.Contains(logs.String(), `stage=`+stage) {
+			t.Errorf("logs missing stage %q: %s", stage, logs.String())
+		}
+	}
+	for _, sensitive := range []string{managerPassword, server.URL} {
+		if strings.Contains(logs.String(), sensitive) {
+			t.Errorf("logs contain sensitive or endpoint value %q: %s", sensitive, logs.String())
+		}
 	}
 }
 

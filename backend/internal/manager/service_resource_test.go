@@ -1,8 +1,10 @@
 package manager
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 	"testing"
@@ -42,6 +44,65 @@ func TestEnsureServiceResourceCreatesAndReuses(t *testing.T) {
 	}
 	if firstID != "service-1" || secondID != firstID || len(cc.createResources) != 1 {
 		t.Fatalf("IDs = %q, %q; create calls = %d", firstID, secondID, len(cc.createResources))
+	}
+}
+
+func TestEnsureServiceResourceLogsCreateAndReuseStages(t *testing.T) {
+	cc := &fakeCommander{resource: commander.ResourceDetail{
+		Resource: commander.Resource{ID: "service-1", Name: ServiceResourceName, Type: ServiceResourceType, Manager: "manager-1", External: true},
+		Config:   commander.ResourceConfig{ID: "service-1", Name: ServiceResourceName, Type: ServiceResourceType, Manager: "manager-1", Metadata: cloneServiceResourceMetadata()},
+	}}
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	s := NewService("manager-1", cc, nil)
+	if _, err := s.EnsureServiceResource(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cc.resources = []commander.Resource{cc.resource.Resource}
+	if _, err := s.EnsureServiceResource(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, stage := range []string{"s3_provisioner_lookup_started", "s3_provisioner_create_started", "s3_provisioner_created", "s3_provisioner_reuse_started", "s3_provisioner_reused"} {
+		if !strings.Contains(logs.String(), `stage=`+stage) {
+			t.Errorf("logs missing stage %q: %s", stage, logs.String())
+		}
+	}
+	for _, sensitive := range []string{"service-1", "manager-1", "cloudflare-r2"} {
+		if strings.Contains(logs.String(), sensitive) {
+			t.Errorf("logs contain resource detail %q: %s", sensitive, logs.String())
+		}
+	}
+}
+
+func TestValidateServiceResourceReportsFixedFieldPath(t *testing.T) {
+	base := commander.ResourceDetail{
+		Resource: commander.Resource{ID: "service-1", Name: ServiceResourceName, Type: ServiceResourceType, Manager: "manager-1", External: true},
+		Config:   commander.ResourceConfig{ID: "service-1", Name: ServiceResourceName, Type: ServiceResourceType, Manager: "manager-1", Metadata: map[string]any{"provider": "cloudflare-r2", "role": "provisioner", "contract_version": 1}},
+	}
+	for _, test := range []struct {
+		name      string
+		mutate    func(*commander.ResourceDetail)
+		wantPath  string
+		forbidden string
+	}{
+		{name: "missing resource type", mutate: func(d *commander.ResourceDetail) { d.Config.Type = "" }, wantPath: "config.resource_type"},
+		{name: "unexpected metadata provider", mutate: func(d *commander.ResourceDetail) { d.Config.Metadata["provider"] = "sentinel-private-value" }, wantPath: "config.metadata.provider", forbidden: "sentinel-private-value"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			detail := base
+			detail.Config.Metadata = cloneServiceResourceMetadata()
+			test.mutate(&detail)
+			err := validateServiceResource(detail, "manager-1", "service-1")
+			if err == nil || !strings.Contains(err.Error(), test.wantPath) {
+				t.Fatalf("validation error = %v, want %s field path", err, test.wantPath)
+			}
+			if test.forbidden != "" && strings.Contains(err.Error(), test.forbidden) {
+				t.Fatalf("validation error exposed configuration value: %v", err)
+			}
+		})
 	}
 }
 
