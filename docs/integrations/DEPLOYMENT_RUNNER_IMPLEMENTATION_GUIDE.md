@@ -719,6 +719,8 @@ type HealthCheckSpec struct {
 	StartPeriodSeconds int64    `json:"start_period_seconds,omitempty"`
 	Retries            int      `json:"retries,omitempty"`
 	WaitTimeoutSeconds int64    `json:"wait_timeout_seconds,omitempty"`
+	LogHealthOutput    bool     `json:"log_health_output,omitempty"`
+	LogContainerOutput *bool    `json:"log_container_output,omitempty"`
 }
 
 type ConfigMapBinding struct {
@@ -772,7 +774,9 @@ Long-running services may request a Docker health check:
     "timeout_seconds": 3,
     "start_period_seconds": 30,
     "retries": 3,
-    "wait_timeout_seconds": 300
+    "wait_timeout_seconds": 300,
+    "log_health_output": true,
+    "log_container_output": true
   }
 }
 ```
@@ -789,21 +793,27 @@ After starting a checked service, the runner inspects Docker health once per
 second and waits for `healthy` before publishing that service's resources or
 allowing its dependents to start. `unhealthy`, a stopped or restarting
 container, unavailable or unexpected health status, Docker inspection failure,
-context cancellation, or wait timeout fails setup. The wait does not log
-health probe output. The container-created lifecycle event may already have
-been emitted before start and health waiting; a later health failure fails the
-run and enters normal run recovery. Health checks are invalid on `runner` and
-inline `fail_runner` services, whose success is based on exit status.
+context cancellation, or wait timeout fails setup. When enabled,
+`log_health_output` prints Docker's retained probe records on a failed wait,
+including the `restarting` case. It defaults to false. The independent
+`log_container_output` option controls the last 100 stdout and stderr lines.
+Omitting it preserves legacy behavior: the runner prints the tail when no
+resolved values or service secret writes are active. Set it to `true` to
+request the tail even when values are active, or `false` to suppress it.
+Enabled sources print an explicit message when Docker has no output or cannot
+provide it. Known secrets and captured values are redacted. Opted-in output
+may still contain sensitive text the runner does not know, so managers should
+enable it only when the container diagnostics are safe to show in the runner
+log. Diagnostic retrieval does not replace the original setup error. The
+container-created lifecycle event may already have been emitted before start
+and health waiting; a later health failure fails the run and enters normal run
+recovery. Health checks are invalid on `runner` and inline `fail_runner`
+services, whose success is based on exit status.
 
-If a normal service fails to start or its configured health wait fails, the
-runner requests the container's last 100 stdout and stderr log lines from
-Docker and prints them before returning the setup error. Log retrieval is
-best-effort: if Docker cannot provide the logs, the runner reports that
-failure and still returns the original setup error. These are container logs;
-the runner does not print Docker health probe output.
-
-When `health_check` is absent or `null`, the runner preserves the current
-startup behavior and does not wait for an image-defined Docker health check.
+For a normal service with a configured health check, diagnostic output is
+selected independently by the two health check options above. If the health
+check is absent or `null`, existing start-failure logging behavior applies
+and setup does not wait for an image-defined Docker health check.
 When present, the supplied test replaces the image health-check test, and
 configured timing/retry values override the corresponding image values.
 
@@ -949,7 +959,9 @@ Environment variables are supplied as a string map:
 
 Every value must be represented as a string.
 
-Do not place secrets into logs.
+Do not place secrets into ordinary logs. Explicit health diagnostic options
+redact values known to the runner, but may reveal sensitive text emitted by a
+container that the runner cannot identify.
 
 Do not include environment variables unrelated to the service.
 
@@ -2194,7 +2206,7 @@ Before declaring the manager implementation complete, verify:
 - Errors are returned with useful context.
 - Value interpolation uses `values_version: 1` only on a capable runner and only in supported fields.
 - Secret keys copied to resources or connections are exact current-run keys.
-- Secrets are not logged.
+- Secrets are not included in ordinary logs; explicitly enabled health diagnostics redact known values and may expose unknown sensitive container output.
 - Tests cover setup, update, and failure paths.
 - Documentation reflects the implementation.
 - The project passes formatting, tests, vetting, and build checks.
