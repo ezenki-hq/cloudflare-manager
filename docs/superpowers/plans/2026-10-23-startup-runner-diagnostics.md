@@ -34,11 +34,11 @@
 
 **Interfaces:** `buildInstallRun(input: InstallInput & { managerId: string; commander: CommanderConnection }): StartRunOptions` continues to produce the install metadata. Its `services["cloudflare-manager"].health_check` gains Boolean `log_health_output` and `log_container_output` fields; no other service or runner field changes.
 
-- [ ] **Step 1: Write the failing installer assertion.** Extend the existing `builds a values-enabled one-click install with approved Commander connection` test to assert both diagnostic fields are `true`, the health command remains `["CMD", "/app/cloudflare-manager", "healthcheck"]`, and `generate-jwt-secret.stream_output` remains `false`.
-- [ ] **Step 2: Run the focused test.** Run `cd installer && npm test -- --run src/installer.test.ts`. Expect failure only on the missing diagnostic fields.
-- [ ] **Step 3: Set both fields in `buildInstallRun`.** Add `log_health_output: true` and `log_container_output: true` to the existing service `health_check` object. Do not set a generic service `stream_output` field.
-- [ ] **Step 4: Verify the task.** Run `cd installer && npm test -- --run src/installer.test.ts && npm run build`. Expect all focused tests and the build to pass.
-- [ ] **Step 5: Commit.** Stage the two installer files and commit as `feat: show manager startup diagnostics in runner`.
+- [x] **Step 1: Write the failing installer assertion.** Extend the existing `builds a values-enabled one-click install with approved Commander connection` test to assert both diagnostic fields are `true`, the health command remains `["CMD", "/app/cloudflare-manager", "healthcheck"]`, and `generate-jwt-secret.stream_output` remains `false`.
+- [x] **Step 2: Run the focused test.** Run `cd installer && npm test -- --run src/installer.test.ts`. Expect failure only on the missing diagnostic fields.
+- [x] **Step 3: Set both fields in `buildInstallRun`.** Add `log_health_output: true` and `log_container_output: true` to the existing service `health_check` object. Do not set a generic service `stream_output` field.
+- [x] **Step 4: Verify the task.** Run `cd installer && npm test -- --run src/installer.test.ts && npm run build`. Expect all focused tests and the build to pass.
+- [x] **Step 5: Commit.** Stage the two installer files and commit as `feat: show manager startup diagnostics in runner`.
 
 ### Task 2: Emit safe startup stages and mismatch reasons
 

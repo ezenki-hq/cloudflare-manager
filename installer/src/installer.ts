@@ -37,6 +37,8 @@ export function buildInstallRun(input: InstallInput & { managerId: string; comma
         },
         health_check: {
           test: ["CMD", "/app/cloudflare-manager", "healthcheck"],
+          log_health_output: true,
+          log_container_output: true,
           interval_seconds: 10, timeout_seconds: 3, start_period_seconds: 15, retries: 3, wait_timeout_seconds: 180,
         },
       },
