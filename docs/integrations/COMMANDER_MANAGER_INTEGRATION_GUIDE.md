@@ -302,11 +302,12 @@ All paths are under `/api/v1`. Every route except token inspection requires
 manager authentication and readiness. The current manager always comes from
 credentials; no path, query, or body field selects it.
 
-The [checked-in manager API OpenAPI specification](../api/manager/openapi.json)
-describes these `/api/v1` operations, request inputs, and authentication
-schemes. A running manager server also serves the current specification at
-`GET /openapi.json`. Installer requests to the Rust agent's separate `/v1` API
-are documented in the [runner integration guide](../../../agent/RUNNER_INTEGRATION_GUIDE.md).
+The checked-in manager API OpenAPI specification
+(`commanders/single/api/manager/openapi.json`) describes these `/api/v1`
+operations, request inputs, and authentication schemes. A running manager
+server also serves the current specification at `GET /openapi.json`. Installer
+requests to the Rust agent's separate `/v1` API are documented in
+`agent/RUNNER_INTEGRATION_GUIDE.md`.
 
 | Method | Path                          | Purpose                                                                 |
 | ------ | ----------------------------- | ----------------------------------------------------------------------- |
@@ -797,7 +798,10 @@ The successful response is exactly:
 
 ## Installer run environment and agent API
 
-For a complete from-scratch runner implementation, see the [standalone runner integration guide](../../../agent/RUNNER_INTEGRATION_GUIDE.md). That guide is authoritative for the runner image and runtime contract; this Commander guide remains authoritative for the manager approval workflow.
+For a complete from-scratch runner implementation, see
+`agent/RUNNER_INTEGRATION_GUIDE.md`. That guide is authoritative for the runner
+image and runtime contract; this Commander guide remains authoritative for the
+manager approval workflow.
 
 Docker runs receive `/run/config.json` (the complete run configuration,
 including optional manager-owned `config`), persistent `/run/data`,
