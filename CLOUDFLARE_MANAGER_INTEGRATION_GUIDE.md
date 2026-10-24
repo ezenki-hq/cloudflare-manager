@@ -11,37 +11,39 @@ The bucket request never includes S3 credentials. Creating a bucket and creating
 
 ## Find the Cloudflare Manager provisioner
 
-The full stack Cloudflare Manager publishes one external Commander resource with type `s3`, name `Cloudflare R2 S3`, and metadata `provider: cloudflare-r2`, `role: provisioner`, `contract_version: 1`. Discover the resource using your manager's RPC caller, then verify its detail before opening the child interface:
+The full stack Cloudflare Manager publishes one external Commander resource with type `s3` and name `Cloudflare R2 S3`. Its private configuration has metadata `provider: cloudflare-r2`, `role: provisioner`, `contract_version: 1`. Discover it using your manager's RPC caller and check the public resource summary:
 
 ```ts
 const cloudflareManagerId = "<cloudflare-manager-id>";
-const { items } = await caller.getResources({
-  type: "s3",
-  external: true,
-  manager: cloudflareManagerId,
-});
+async function listCloudflareResources(type: string) {
+  const resources: Awaited<ReturnType<typeof caller.getResources>>["items"] = [];
+  for (let offset = 0; ; ) {
+    const page = await caller.getResources({
+      type,
+      external: true,
+      manager: cloudflareManagerId,
+      limit: 100,
+      offset,
+    });
+    resources.push(...page.items);
+    if (page.items.length === 0 && offset < page.total) {
+      throw new Error("Commander returned an incomplete resource list");
+    }
+    if (offset + page.items.length >= page.total) return resources;
+    offset += page.items.length;
+  }
+}
 
-const candidates = items.filter((item) => item.name === "Cloudflare R2 S3");
+const candidates = (await listCloudflareResources("s3")).filter(
+  (item) => item.name === "Cloudflare R2 S3" && item.manager === cloudflareManagerId,
+);
 if (candidates.length !== 1) {
   throw new Error("Cloudflare Manager's S3 provisioner is missing or ambiguous");
 }
-
-const detail = await caller.getResource(candidates[0].id);
-if (
-  detail.resource.type !== "s3" ||
-  detail.resource.name !== "Cloudflare R2 S3" ||
-  detail.resource.manager !== cloudflareManagerId ||
-  detail.resource.external !== true ||
-  detail.config.resource_type !== "s3" ||
-  detail.config.metadata?.provider !== "cloudflare-r2" ||
-  detail.config.metadata?.role !== "provisioner" ||
-  detail.config.metadata?.contract_version !== 1
-) {
-  throw new Error("The Cloudflare Manager S3 provisioner did not pass verification");
-}
+const provisioner = candidates[0];
 ```
 
-The resource is created during full stack installation and reused on later installs. Installation does not need a Cloudflare account or OAuth session.
+Commander exposes only summaries to other managers. Your manager cannot read this provisioner's private configuration with `getResource`. Cloudflare Manager validates its full resource detail and metadata in the `create-bucket` child before any Cloudflare operation. The resource is created during full stack installation and reused on later installs. Installation does not need a Cloudflare account or OAuth session.
 
 ## Request a bucket resource
 
@@ -52,7 +54,7 @@ const child = await wire.startInterface({
   manager: cloudflareManagerId,
   metadata: {
     action: "create-bucket",
-    resource: candidates[0].id,
+    resource: provisioner.id,
     suggested: {
       account_id: "<optional-account-id>",
       jurisdiction: "default",
@@ -111,20 +113,32 @@ Successful response example:
 
 The `cdn` field is omitted when the user does not request a hostname. Its `enabled` and `status` values report Cloudflare's current state. Domain ownership or TLS can still be pending after successful setup.
 
-Verify the returned identity against a fresh Commander read before using it:
+Check the returned identity and look it up in Commander's public resource summaries before using it:
 
 ```ts
-const bucketResource = await caller.getResource(result.resource.id);
 if (
-  bucketResource.resource.id !== result.resource.id ||
-  bucketResource.resource.manager !== cloudflareManagerId ||
-  bucketResource.resource.type !== "cloudflare-r2-bucket"
+  response.manager !== cloudflareManagerId ||
+  !result?.resource?.id ||
+  result.resource.manager !== cloudflareManagerId ||
+  result.resource.type !== "cloudflare-r2-bucket"
+) {
+  throw new Error("Cloudflare Manager returned an unexpected bucket resource");
+}
+
+const bucketResource = (await listCloudflareResources("cloudflare-r2-bucket")).find(
+  (item) => item.id === result.resource.id,
+);
+if (
+  !bucketResource ||
+  bucketResource.manager !== cloudflareManagerId ||
+  bucketResource.type !== "cloudflare-r2-bucket" ||
+  !bucketResource.external
 ) {
   throw new Error("Cloudflare Manager returned an unexpected bucket resource");
 }
 ```
 
-The response contains resource identity and nonsecret bucket settings only. Do not treat it as a credential response.
+The lookup confirms public identity only; `getResource` cannot read another manager's private bucket configuration. The response contains resource identity and nonsecret bucket settings only. Do not treat it as a credential response.
 
 ## Create an application connection
 
@@ -145,10 +159,27 @@ if (!connectionResponse.ok) {
   throw new Error(connectionResponse.error?.message ?? "Connection setup was not completed");
 }
 
-const connection = connectionResponse.result.connection as {
+const connection = connectionResponse.result?.connection as {
   id: string;
   resource: string;
 };
+
+if (
+  connectionResponse.manager !== cloudflareManagerId ||
+  !connection?.id ||
+  connection.resource !== result.resource.id
+) {
+  throw new Error("Cloudflare Manager returned an unexpected connection");
+}
+
+const savedConnection = await caller.getConnection(connection.id);
+if (
+  savedConnection.connection.id !== connection.id ||
+  savedConnection.connection.manager !== await caller.getManager() ||
+  savedConnection.connection.resource !== result.resource.id
+) {
+  throw new Error("The connection does not belong to this manager and bucket");
+}
 ```
 
 Custom Deployer can continue to pass its group labels. Both labels must be present and valid together:
@@ -165,7 +196,7 @@ metadata: {
 }
 ```
 
-Cloudflare Manager creates a token scoped to the selected bucket and permission, saves the key pair as secrets on the consuming manager's Commander connection, confirms that connection, and returns its identity. The child response does not include either key value.
+The `create-connection` action uses the user's active Cloudflare session. If that session has expired, sign in to Cloudflare Manager and retry the action. Cloudflare Manager creates a token scoped to the selected bucket and permission, saves the key pair as secrets on the consuming manager's Commander connection, confirms that connection, and returns its identity. The child response does not include either key value. Your manager can read this connection's detail because it owns the connection.
 
 ## Use the connection in a deployment
 
@@ -196,6 +227,6 @@ Invalid action metadata, an unavailable calling-manager identity, or a resource 
 
 ## Teardown and persistence
 
-Full stack teardown preserves the `Cloudflare R2 S3` provisioner resource, registered bucket resource records, Cloudflare R2 buckets, and CDN domains. Reinstalling the manager reuses the provisioner record. Existing bucket resources and Cloudflare state remain available to consuming managers.
+Full stack teardown preserves the `Cloudflare R2 S3` provisioner resource, registered bucket resource records, Cloudflare R2 buckets, and CDN domains. Reinstalling the manager reuses the provisioner record. Existing bucket resources and Cloudflare state remain available to consuming managers once the service is reinstalled.
 
-Application connections and their access keys are managed separately from bucket setup. Revoke an application connection through the normal Cloudflare Manager lifecycle when that application should lose bucket access.
+Application connections and their access keys are managed separately from bucket setup and may remain active after full stack teardown. Revoke an application connection through the normal Cloudflare Manager lifecycle when that application should lose bucket access.
