@@ -95,6 +95,59 @@ func TestPrepareCommanderLogsSafeStartupStagesOnFailure(t *testing.T) {
 	}
 }
 
+func TestPrepareCommanderLogsSafe422ResourceValidationDetails(t *testing.T) {
+	const (
+		managerPassword = "sentinel-manager-password"
+		responseValue   = "sentinel-private-response-value"
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/manager":
+			_ = json.NewEncoder(w).Encode(map[string]string{"id": "manager-1"})
+		case "/api/v1/resources/mine":
+			_ = json.NewEncoder(w).Encode(map[string]any{"items": []any{}, "limit": 100, "offset": 0, "total": 0})
+		case "/api/v1/resources":
+			if r.Method != http.MethodPost {
+				t.Errorf("resource request method = %q, want POST", r.Method)
+			}
+			w.Header().Set("Content-Type", "application/problem+json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"status":422,"title":"Unprocessable Entity","detail":"rejected ` + responseValue + `","errors":[{"location":"body.config.metadata","message":"Property metadata is required: ` + responseValue + `","value":"` + responseValue + `"}]}`))
+		default:
+			t.Errorf("unexpected Commander request %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := commander.NewClient(server.URL+"/api/v1", "manager-1", managerPassword, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	err = prepareCommander(t.Context(), "manager-1", client)
+	if err == nil || !strings.Contains(err.Error(), "422") {
+		t.Fatalf("prepareCommander error = %v, want status 422", err)
+	}
+	for _, want := range []string{
+		"operation=resource_create", "metadata_kind=object", "stage=s3_provisioner_create_rejected",
+		"status=422", "body.config.metadata", "required", "validation_status=parsed",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs missing %q: %s", want, logs.String())
+		}
+	}
+	for _, sensitive := range []string{managerPassword, responseValue, server.URL, "manager-1"} {
+		if strings.Contains(logs.String(), sensitive) {
+			t.Errorf("logs contain sensitive or identifying value %q: %s", sensitive, logs.String())
+		}
+	}
+}
+
 func TestPrepareCommanderAcceptsCommanderResourceTypeInConfig(t *testing.T) {
 	resourceCreated := false
 	createCalls := 0

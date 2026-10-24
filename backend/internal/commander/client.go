@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"mime"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,6 +19,7 @@ import (
 const (
 	defaultPageSize = 100
 	maxResponseSize = 4 << 20
+	maxProblemSize  = 32 << 10
 )
 
 type Client struct {
@@ -27,11 +30,20 @@ type Client struct {
 }
 
 type APIError struct {
-	StatusCode int
+	StatusCode          int
+	validationStatus    string
+	validationLocations []string
+	validationKinds     []string
 }
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("Commander request failed (status %d)", e.StatusCode)
+}
+
+// ValidationDiagnostics returns only sanitized request field paths and
+// categories from a Commander Huma validation response.
+func (e *APIError) ValidationDiagnostics() (string, []string, []string) {
+	return e.validationStatus, append([]string(nil), e.validationLocations...), append([]string(nil), e.validationKinds...)
 }
 
 type Resource struct {
@@ -382,6 +394,9 @@ func (c *Client) request(ctx context.Context, method, suffix string, body, outpu
 			return errors.New("Commander request could not be encoded")
 		}
 		reader = bytes.NewReader(encoded)
+		if method == http.MethodPost && suffix == "/resources" {
+			logResourceCreateShape(encoded)
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+suffix, reader)
 	if err != nil {
@@ -398,7 +413,11 @@ func (c *Client) request(ctx context.Context, method, suffix string, body, outpu
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &APIError{StatusCode: resp.StatusCode}
+		apiErr := &APIError{StatusCode: resp.StatusCode}
+		if resp.StatusCode == http.StatusUnprocessableEntity {
+			apiErr.validationStatus, apiErr.validationLocations, apiErr.validationKinds = readValidationDiagnostics(resp)
+		}
+		return apiErr
 	}
 	if resp.StatusCode == http.StatusNoContent || output == nil {
 		return nil
@@ -411,6 +430,110 @@ func (c *Client) request(ctx context.Context, method, suffix string, body, outpu
 		return errors.New("Commander response is invalid")
 	}
 	return nil
+}
+
+func logResourceCreateShape(encoded []byte) {
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		slog.Info("Commander resource create request", "operation", "resource_create", "shape_status", "invalid_json")
+		return
+	}
+	var config map[string]json.RawMessage
+	configPresent := body["config"] != nil
+	if configPresent {
+		_ = json.Unmarshal(body["config"], &config)
+	}
+	metadata, metadataPresent := config["metadata"]
+	slog.Info("Commander resource create request",
+		"operation", "resource_create",
+		"name_present", body["name"] != nil,
+		"type_present", body["type"] != nil,
+		"external_present", body["external"] != nil,
+		"config_present", configPresent,
+		"metadata_present", metadataPresent,
+		"metadata_kind", jsonKind(metadata),
+	)
+}
+
+func jsonKind(value json.RawMessage) string {
+	trimmed := bytes.TrimSpace(value)
+	if len(trimmed) == 0 {
+		return "missing"
+	}
+	switch trimmed[0] {
+	case '{':
+		return "object"
+	case '[':
+		return "array"
+	case '"':
+		return "string"
+	case 't', 'f':
+		return "boolean"
+	case 'n':
+		return "null"
+	default:
+		return "number"
+	}
+}
+
+func readValidationDiagnostics(resp *http.Response) (string, []string, []string) {
+	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/problem+json" {
+		return "unexpected_content_type", nil, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxProblemSize+1))
+	if err != nil {
+		return "unreadable", nil, nil
+	}
+	if len(body) > maxProblemSize {
+		return "body_too_large", nil, nil
+	}
+	var problem struct {
+		Errors []struct {
+			Location string `json:"location"`
+			Message  string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &problem); err != nil {
+		return "invalid_json", nil, nil
+	}
+	if len(problem.Errors) == 0 {
+		return "no_validation_errors", nil, nil
+	}
+	const maxValidationIssues = 8
+	locations := make([]string, 0, min(len(problem.Errors), maxValidationIssues))
+	kinds := make([]string, 0, min(len(problem.Errors), maxValidationIssues))
+	for _, issue := range problem.Errors[:min(len(problem.Errors), maxValidationIssues)] {
+		locations = append(locations, safeValidationLocation(issue.Location))
+		kinds = append(kinds, validationKind(issue.Message))
+	}
+	return "parsed", locations, kinds
+}
+
+func safeValidationLocation(location string) string {
+	switch location {
+	case "body.name", "body.type", "body.external", "body.config",
+		"body.config.manager", "body.config.name", "body.config.metadata",
+		"body.config.metadata.provider", "body.config.metadata.role", "body.config.metadata.contract_version",
+		"body.config.platform_connection", "body.config.public_connection":
+		return location
+	default:
+		return "body.other"
+	}
+}
+
+func validationKind(message string) string {
+	message = strings.ToLower(message)
+	switch {
+	case strings.Contains(message, "required"), strings.Contains(message, "missing"):
+		return "required"
+	case strings.Contains(message, "additional"), strings.Contains(message, "unknown"), strings.Contains(message, "not allowed"):
+		return "unexpected_field"
+	case strings.Contains(message, "type"), strings.Contains(message, "expected"), strings.Contains(message, "must be"):
+		return "invalid_type"
+	default:
+		return "validation"
+	}
 }
 
 func escapePathComponent(value string) string {

@@ -53,6 +53,19 @@ func (s *Service) EnsureServiceResource(ctx context.Context) (string, error) {
 		Metadata: cloneServiceResourceMetadata(),
 	})
 	if err != nil {
+		var apiErr *commander.APIError
+		if errors.As(err, &apiErr) {
+			validationStatus, locations, kinds := apiErr.ValidationDiagnostics()
+			slog.Error("Cloudflare Manager startup",
+				"stage", "s3_provisioner_create_rejected",
+				"status", apiErr.StatusCode,
+				"validation_status", validationStatus,
+				"validation_locations", locations,
+				"validation_categories", kinds,
+			)
+		} else {
+			slog.Error("Cloudflare Manager startup", "stage", "s3_provisioner_create_rejected", "error_kind", "commander_request_failed")
+		}
 		return "", fmt.Errorf("create S3 service resource: %w", err)
 	}
 	if err := validateServiceResource(detail, s.managerID, detail.Resource.ID); err != nil {

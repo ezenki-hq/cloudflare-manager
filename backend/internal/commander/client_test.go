@@ -1,10 +1,12 @@
 package commander
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -85,6 +87,82 @@ func TestGetResourceRejectsResourceOwnedByAnotherManager(t *testing.T) {
 
 	if _, err := newTestClient(t, server.URL).GetResource(context.Background(), "resource-1"); err == nil {
 		t.Fatal("GetResource accepted a resource owned by a different manager")
+	}
+}
+
+func TestCreateResourceSendsDocumentedShapeAndLogsOnlyStructure(t *testing.T) {
+	const metadataValue = "private-metadata-sentinel"
+	server := jsonServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/resources" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		config, ok := body["config"].(map[string]any)
+		if !ok || body["name"] != "Cloudflare R2 S3" || body["type"] != "s3" || body["external"] != true || config["metadata"] == nil {
+			t.Errorf("resource create body = %#v", body)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"resource": map[string]any{"id": "resource-1", "name": "Cloudflare R2 S3", "type": "s3", "manager": testManagerID, "external": true},
+			"config":   map[string]any{"id": "resource-1", "resource_type": "s3", "manager": testManagerID, "metadata": map[string]any{}},
+		})
+	})
+	defer server.Close()
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	_, err := newTestClient(t, server.URL).CreateResource(context.Background(), ResourceCreate{
+		Name: "Cloudflare R2 S3", Type: "s3", External: true,
+		Metadata: map[string]any{"provider": metadataValue, "role": "provisioner", "contract_version": 1},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"operation=resource_create", "name_present=true", "type_present=true", "external_present=true", "config_present=true", "metadata_present=true", "metadata_kind=object"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("request shape logs missing %q: %s", want, logs.String())
+		}
+	}
+	if strings.Contains(logs.String(), metadataValue) || strings.Contains(logs.String(), testManagerID) || strings.Contains(logs.String(), server.URL) {
+		t.Fatalf("request shape logs contain a value: %s", logs.String())
+	}
+}
+
+func TestCreateResource422RetainsOnlySafeValidationDetails(t *testing.T) {
+	const secretSentinel = "private-response-value"
+	server := jsonServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/resources" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"status":422,"title":"Unprocessable Entity","detail":"rejected ` + secretSentinel + `","errors":[{"location":"body.config.metadata","message":"Property metadata is required: ` + secretSentinel + `","value":"` + secretSentinel + `"}]}`))
+	})
+	defer server.Close()
+
+	_, err := newTestClient(t, server.URL).CreateResource(context.Background(), ResourceCreate{
+		Name: "Cloudflare R2 S3", Type: "s3", External: true, Metadata: map[string]any{"provider": "cloudflare-r2"},
+	})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("CreateResource error = %v, want APIError 422", err)
+	}
+	diagnostics, ok := any(apiErr).(interface {
+		ValidationDiagnostics() (string, []string, []string)
+	})
+	if !ok {
+		t.Fatal("APIError does not expose safe validation diagnostics")
+	}
+	status, locations, categories := diagnostics.ValidationDiagnostics()
+	if status != "parsed" || fmt.Sprint(locations) != "[body.config.metadata]" || fmt.Sprint(categories) != "[required]" {
+		t.Fatalf("validation diagnostics = %q, %v, %v", status, locations, categories)
+	}
+	if strings.Contains(err.Error(), secretSentinel) {
+		t.Fatalf("APIError exposed response value: %v", err)
 	}
 }
 
