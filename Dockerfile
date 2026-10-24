@@ -12,13 +12,14 @@ ARG TARGETOS
 ARG TARGETARCH
 ARG TARGETVARIANT
 ARG GO_BUILD_PARALLELISM=1
+ARG BUILD_REVISION=unknown
 WORKDIR /src/backend
 COPY backend/go.mod ./
 COPY backend/ ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
     export CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH"; \
     if [ "$TARGETARCH" = "arm" ]; then export GOARM="${TARGETVARIANT#v}"; fi; \
-    go build -p="$GO_BUILD_PARALLELISM" -trimpath -ldflags="-s -w" -o /out/cloudflare-manager ./cmd/cloudflare-manager && \
+    go build -p="$GO_BUILD_PARALLELISM" -trimpath -ldflags="-s -w -X main.buildRevision=$BUILD_REVISION" -o /out/cloudflare-manager ./cmd/cloudflare-manager && \
     go build -p="$GO_BUILD_PARALLELISM" -trimpath -ldflags="-s -w" -o /out/cloudflare-manager-state-ttl ./cmd/state-ttl
 
 FROM gcr.io/distroless/static-debian12:nonroot AS service

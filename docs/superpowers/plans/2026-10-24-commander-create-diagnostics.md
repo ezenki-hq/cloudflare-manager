@@ -24,16 +24,16 @@
 - [x] Add shape logging for the encoded `POST /resources` body: required field presence plus `config.metadata` JSON kind only.
 - [x] Parse at most 32 KiB of a 422 response; retain allowlisted locations and safe categories only. Ignore `value`, `detail`, and raw messages.
 - [x] On S3 provisioner create failure, log a fixed rejection stage, status, parser state, locations, and categories. Keep the returned API error status-only.
-- [ ] Verify the focused Go tests and commit as `feat: report safe Commander resource validation details`.
+- [x] Verify the focused Go tests and commit as `feat: report safe Commander resource validation details`.
 
 ### Task 2: Identify the running manager build
 
 **Files:** Modify `backend/cmd/cloudflare-manager/main.go`, `Dockerfile`, and `build.sh`.
 
-- [ ] Add a startup log field for the embedded build revision.
-- [ ] Pass the short git revision from `build.sh` through a Docker build argument and linker flag; preserve `unknown` as the fallback for direct builds.
-- [ ] Build with a known test revision and run a failed Commander startup smoke test to confirm the revision and stage appear without credentials.
-- [ ] Run all Go tests, `go vet`, manager build, build-script shell check, and `git diff --check`; commit as `feat: log manager build revision`.
+- [x] Add a startup log field for the embedded build revision.
+- [x] Pass the short git revision from `build.sh` through a Docker build argument and linker flag; preserve `unknown` as the fallback for direct builds.
+- [x] Build with a known test revision and run a failed Commander startup smoke test to confirm the revision and stage appear without credentials.
+- [x] Run all Go tests, `go vet`, manager build, build-script shell check, and `git diff --check`; commit as `feat: log manager build revision`.
 
 ## Final verification
 

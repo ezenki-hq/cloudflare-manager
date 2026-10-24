@@ -29,6 +29,8 @@ const (
 	defaultPort             = "8080"
 )
 
+var buildRevision = "unknown"
+
 func main() {
 	if err := runCommand(os.Args[1:], os.Stdout); err != nil {
 		log.Fatal(err)
@@ -68,7 +70,7 @@ func serve() error {
 	if err != nil || len(jwtSecret) != 32 {
 		return fmt.Errorf("JWT_SECRET must be an unpadded base64url value containing 32 bytes")
 	}
-	slog.Info("Cloudflare Manager startup", "stage", "configuration_validated")
+	slog.Info("Cloudflare Manager startup", "stage", "configuration_validated", "build_revision", buildRevision)
 	commanderClient, err := commander.NewClient(managerAPI, managerID, managerPassword, &http.Client{Timeout: 12 * time.Second})
 	if err != nil {
 		return fmt.Errorf("configure Commander: %w", err)

@@ -28,6 +28,25 @@ func TestGenerateJWTSecretCommandPrintsOnlySecret(t *testing.T) {
 	}
 }
 
+func TestStartupConfigurationLogIncludesBuildRevision(t *testing.T) {
+	t.Setenv("MANAGER_ID", "manager-1")
+	t.Setenv("MANAGER_API", "not-a-valid-url")
+	t.Setenv("MANAGER_PASSWORD", "sentinel-manager-password")
+	t.Setenv("JWT_SECRET", base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32)))
+
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	if err := serve(); err == nil || !strings.Contains(err.Error(), "configure Commander") {
+		t.Fatalf("serve error = %v, want Commander configuration failure", err)
+	}
+	if !strings.Contains(logs.String(), "build_revision=unknown") {
+		t.Fatalf("startup log missing default build revision: %s", logs.String())
+	}
+}
+
 func TestPrepareCommanderStopsBeforeHealthOnResourceFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
