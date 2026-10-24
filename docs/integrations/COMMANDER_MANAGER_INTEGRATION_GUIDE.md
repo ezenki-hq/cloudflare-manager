@@ -287,16 +287,26 @@ Use Basic over trusted TLS for unattended backends. The API also accepts an
 HS256 bearer containing `manager_id`; Basic does not exchange for a token.
 `POST /auth/inspect` validates a supplied bearer but does not mint or refresh
 one. Functional routes are readiness-gated and fail closed while the agent is
-unavailable. Invalid input is `400`, inaccessible scoped records `404`,
-conflicts `409`, and successful connection deletion `204`; authentication is
-`401` with the existing Basic/Bearer challenge. Errors use the normal
-structured Huma envelope; redact secrets before retaining bodies.
+unavailable. Malformed JSON or unsupported content types return `400` or
+`415`; Huma body-schema validation returns `422` before the resource-create
+handler runs. The structured Huma response includes `errors` entries with a
+field location and message. Service validation returns `400`, inaccessible
+scoped records `404`, conflicts `409`, and successful connection deletion
+`204`. Faults in Commander-generated database queries are logged by Commander
+and return a generic `500`. Authentication is `401` with the existing
+Basic/Bearer challenge; redact secrets before retaining error bodies.
 
 ## Complete cross-manager API
 
 All paths are under `/api/v1`. Every route except token inspection requires
 manager authentication and readiness. The current manager always comes from
 credentials; no path, query, or body field selects it.
+
+The [checked-in manager API OpenAPI specification](../api/manager/openapi.json)
+describes these `/api/v1` operations, request inputs, and authentication
+schemes. A running manager server also serves the current specification at
+`GET /openapi.json`. Installer requests to the Rust agent's separate `/v1` API
+are documented in the [runner integration guide](../../../agent/RUNNER_INTEGRATION_GUIDE.md).
 
 | Method | Path                          | Purpose                                                                 |
 | ------ | ----------------------------- | ----------------------------------------------------------------------- |
@@ -524,8 +534,24 @@ Content-Type: application/json
 {"name":"production","type":"platform","external":false,"config":{"platform_connection":{"network":"manager"},"metadata":{}}}
 ```
 
-The caller ID is not authoritative in the body; a compatibility `config.manager`
-is overwritten from credentials. Flexible resource JSON is preserved.
+Resource-create inputs:
+
+| Field                        | Requirement | Meaning                                      |
+| ---------------------------- | ----------- | -------------------------------------------- |
+| `name`                       | Required    | Resource name.                               |
+| `type`                       | Required    | Resource type.                               |
+| `external`                   | Required    | Whether this resource is external.           |
+| `config`                     | Required    | Resource configuration object.               |
+| `config.metadata`            | Required    | Resource metadata JSON value.                |
+| `labels`                     | Optional    | Resource labels.                             |
+| `config.platform_connection` | Optional    | Flexible platform connection JSON.           |
+| `config.public_connection`   | Optional    | Public connection configuration.             |
+| Other `config` fields        | Optional    | Resource-specific JSON fields are preserved. |
+
+The authenticated manager is authoritative. `config.manager` may be supplied
+for compatibility, but Commander overwrites it from credentials. `config.name`
+is not needed; the top-level `name` is used. Huma returns `422` with the
+offending field location when the body does not match the request schema.
 
 Connection visibility is connection-owner or connected-resource-owner.
 Filters refine visibility, never caller identity. Detail is
